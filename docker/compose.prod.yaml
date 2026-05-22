@@ -42,12 +42,12 @@ services:
     restart: always
 
   # ---------------------------------------------------------------------------
-  # Finetuning-Pipeline-worker — GPU 버전
+  # Finetuning-Pipeline-worker — CPU 베이스 (GPU는 compose.prod.gpu.yaml 오버라이드)
   # ---------------------------------------------------------------------------
   worker:
     build:
       context: ${WFP_WORKER_DIR:-../../Finetuning-Pipeline-worker}
-      dockerfile: Dockerfile.gpu
+      dockerfile: Dockerfile
     image: wfp-worker:prod
     pull_policy: build
     environment:
@@ -69,14 +69,6 @@ services:
       postgres: { condition: service_healthy }
       redis: { condition: service_healthy }
       minio: { condition: service_healthy }
-    # NVIDIA GPU 할당
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: all
-              capabilities: [gpu]
     networks: [wfp]
     restart: always
     labels:
@@ -91,7 +83,7 @@ services:
   # ---------------------------------------------------------------------------
   web:
     build:
-      context: ../../Finetuning-Pipeline-frontend
+      context: ${WFP_FRONTEND_DIR:-../../Finetuning-Pipeline-frontend}
       dockerfile: Dockerfile
     image: wfp-frontend:prod
     pull_policy: build

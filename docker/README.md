@@ -9,13 +9,35 @@ Docker Compose로 동시에 구동하는 방법.
 
 | 파일 | 용도 |
 |------|------|
-| [`compose.dev.yaml`](./compose.dev.yaml) | 개발 — CPU 모드, 인증 우회, 포트 노출 |
-| [`compose.prod.yaml`](./compose.prod.yaml) | 운영 — GPU + Traefik TLS + 백업 사이드카 |
+| [`compose.dev.yaml`](./compose.dev.yaml) | 개발 베이스 — CPU 모드, 인증 우회, 포트 노출 |
+| [`compose.dev.gpu.yaml`](./compose.dev.gpu.yaml) | 개발 GPU 오버라이드 — worker만 GPU 빌드 + nvidia 디바이스 |
+| [`compose.prod.yaml`](./compose.prod.yaml) | 운영 베이스 — CPU + Traefik TLS + 백업 사이드카 |
+| [`compose.prod.gpu.yaml`](./compose.prod.gpu.yaml) | 운영 GPU 오버라이드 |
 | [`compose.infra.yaml`](./compose.infra.yaml) | 인프라 전용 — 호스트 직접 실행 시 (Apple Silicon MPS 등) |
-| [`.env.example`](./.env.example) | 환경 변수 템플릿 (SUPERVISOR 계정, DB/Redis/MinIO/NextAuth 비번) |
-| [`../../Finetuning-Pipeline-worker/Dockerfile`](../../Finetuning-Pipeline-worker/Dockerfile) | 워커 CPU 이미지 (Python 3.12-slim) |
-| [`../../Finetuning-Pipeline-worker/Dockerfile.gpu`](../../Finetuning-Pipeline-worker/Dockerfile.gpu) | 워커 GPU 이미지 (CUDA 12.1) |
-| [`../../Finetuning-Pipeline-frontend/Dockerfile`](../../Finetuning-Pipeline-frontend/Dockerfile) | 프론트엔드 (Node 20 + Next.js standalone) |
+| [`.env.example`](./.env.example) | 환경 변수 템플릿 (SUPERVISOR/DB/Redis/MinIO/NextAuth 비번 + `WFP_WORKER_DIR`) |
+| [`../../Finetuning-Pipeline-worker/Dockerfile`](../../Finetuning-Pipeline-worker/Dockerfile) | 워커 CPU 이미지 — multi-stage `python:3.12-slim` |
+| [`../../Finetuning-Pipeline-worker/Dockerfile.gpu`](../../Finetuning-Pipeline-worker/Dockerfile.gpu) | 워커 GPU 이미지 — `python:3.12-slim` + PyTorch `+cu121` 휠 (CUDA 런타임 번들) |
+| [`../../Finetuning-Pipeline-frontend/Dockerfile`](../../Finetuning-Pipeline-frontend/Dockerfile) | 프론트엔드 (Node 22 + Next.js standalone) |
+
+### Override 패턴
+
+GPU 모드는 `compose.dev.yaml` (또는 `compose.prod.yaml`) **베이스**에 `compose.*.gpu.yaml` **오버라이드**를 합쳐 사용한다. GPU 오버라이드는 `worker` 서비스의 `build.dockerfile`과 `deploy.resources.reservations.devices`만 교체. 인프라(postgres/redis/minio 등)는 베이스 그대로.
+
+```bash
+# CPU
+docker compose -f compose.dev.yaml up -d --build
+# GPU
+docker compose -f compose.dev.yaml -f compose.dev.gpu.yaml up -d --build
+```
+
+Makefile이 `nvidia-smi`로 GPU 유무를 자동 감지해 적절한 조합 선택:
+
+```bash
+make docker-dev      # 자동 — GPU 있으면 GPU, 없으면 CPU
+make docker-dev-cpu  # 강제 CPU
+make docker-dev-gpu  # 강제 GPU
+make docker-info     # 현재 감지 결과 출력
+```
 
 ---
 
@@ -32,15 +54,28 @@ Docker Compose로 동시에 구동하는 방법.
 
 ### 실행
 
+권장 — 루트의 Makefile 사용:
+
 ```bash
-cd ops/docker
+cd Finetuning-Pipeline-ops
+cp docker/.env.example docker/.env
+
+make docker-dev           # GPU 자동 감지 (백그라운드)
+# 또는:
+make docker-dev-cpu       # CPU 강제
+make docker-dev-gpu       # GPU 강제 (nvidia 런타임 필요)
+```
+
+수동:
+
+```bash
+cd Finetuning-Pipeline-ops/docker
 cp .env.example .env
 
-# 빌드 + 기동 (최초 5~10분 소요)
-docker compose -f compose.dev.yaml up --build
-
-# 백그라운드 실행
+# CPU
 docker compose -f compose.dev.yaml up -d --build
+# GPU (베이스 + 오버라이드)
+docker compose -f compose.dev.yaml -f compose.dev.gpu.yaml up -d --build
 ```
 
 ### 접속
@@ -99,14 +134,29 @@ docker run --rm --gpus all nvidia/cuda:12.1.1-base-ubuntu22.04 nvidia-smi
 ### 기동
 
 ```bash
-cd ops/docker
+cd Finetuning-Pipeline-ops/docker
 cp .env.example .env
-# .env 모든 값 채우기 (특히 POSTGRES_PASSWORD, REDIS_PASSWORD, NEXTAUTH_SECRET, DOMAIN)
+# .env 모든 값 채우기 (특히 POSTGRES_PASSWORD, REDIS_PASSWORD, NEXTAUTH_SECRET, DOMAIN, ACME_EMAIL)
+cd ..
 
-docker compose -f compose.prod.yaml up -d --build
+make docker-prod           # GPU 자동 감지 — 권장
+# 또는 강제:
+make docker-prod-cpu       # CPU 강제
+make docker-prod-gpu       # GPU 강제
 
 # 로그 확인
-docker compose -f compose.prod.yaml logs -f traefik
+make docker-logs
+docker compose -f docker/compose.prod.yaml logs -f traefik
+```
+
+수동 (Makefile 없이):
+
+```bash
+cd Finetuning-Pipeline-ops/docker
+# CPU
+docker compose -f compose.prod.yaml up -d --build
+# GPU
+docker compose -f compose.prod.yaml -f compose.prod.gpu.yaml up -d --build
 ```
 
 Traefik이 Let's Encrypt에서 인증서를 자동 발급한다 (`ACME_EMAIL` 필수).
@@ -179,15 +229,24 @@ docker compose -f compose.prod.yaml exec postgres \
 
 ## 5. 운영 명령 모음
 
+Makefile 단축 (권장):
+
+```bash
+make docker-info        # 현재 감지 모드 (GPU/CPU + 경로)
+make docker-ps          # 컨테이너 상태
+make docker-logs        # 워커 로그 추적
+make docker-down        # 정지 (dev + prod 둘 다)
+make docker-clean       # 정지 + 볼륨 삭제 (데이터 손실)
+```
+
+수동 (compose 직접):
+
 ```bash
 # 상태 확인
 docker compose -f compose.dev.yaml ps
 
 # 특정 서비스 재시작
 docker compose -f compose.dev.yaml restart worker
-
-# 워커 로그 추적
-docker compose -f compose.dev.yaml logs -f worker
 
 # 워커 컨테이너 쉘 진입
 docker compose -f compose.dev.yaml exec worker bash

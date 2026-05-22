@@ -50,12 +50,15 @@ Web(Node,Script)/
     ├── rules/
     │   └── hw_to_plan.yaml       # GPU/CPU → 파이프라인 플랜 규칙 (외부화)
     ├── docker/
-    │   ├── compose.dev.yaml      # 개발 — CPU + 인증 우회
-    │   ├── compose.prod.yaml     # 운영 — GPU + Traefik TLS + 백업
+    │   ├── compose.dev.yaml      # 개발 베이스 — CPU + 인증 우회
+    │   ├── compose.dev.gpu.yaml  # 개발 GPU 오버라이드 (nvidia 런타임)
+    │   ├── compose.prod.yaml     # 운영 베이스 — CPU + Traefik TLS + 백업
+    │   ├── compose.prod.gpu.yaml # 운영 GPU 오버라이드 (nvidia 런타임)
+    │   ├── compose.infra.yaml    # 인프라 전용 (호스트 직접 실행용 — Apple MPS 등)
     │   ├── .env.example
     │   └── README.md             # Docker 통합 가이드
-    ├── scripts/                  # bootstrap.sh, gpu-check.sh, reaper.sh (예정)
-    ├── ci/                       # GitHub Actions workflows (예정)
+    ├── scripts/
+    │   └── reaper.py             # 자원 회수 사이드카
     ├── Makefile                  # bootstrap / dev / test / build / docker-*
     └── README.md                 # 본 문서
 ```
@@ -129,12 +132,23 @@ pnpm dev
 
 ### 3-4. Docker 통합 실행 (권장)
 
-수동 절차 대신 단일 명령으로 전체 스택(워커 + 웹 + DB + Redis + MinIO + MailHog) 기동.
+전체 스택(워커 + 웹 + DB + Redis + MinIO + MailHog)을 단일 명령으로 기동. Makefile이 호스트의 GPU 유무를 자동 감지해 CPU/GPU 모드를 선택한다.
 
 ```bash
-make docker-dev
-# 또는:
-cd docker && cp .env.example .env && docker compose -f compose.dev.yaml up -d --build
+make docker-dev      # GPU 자동 감지 (nvidia-smi 검사 → 있으면 GPU 모드)
+make docker-dev-cpu  # CPU 강제
+make docker-dev-gpu  # GPU 강제 (nvidia 런타임 필요)
+make docker-info     # 현재 감지 결과 확인 (경로 + GPU)
+```
+
+수동 실행:
+
+```bash
+cd docker && cp .env.example .env
+# CPU
+docker compose -f compose.dev.yaml up -d --build
+# GPU (베이스 + 오버라이드)
+docker compose -f compose.dev.yaml -f compose.dev.gpu.yaml up -d --build
 ```
 
 접속:
@@ -145,6 +159,16 @@ cd docker && cp .env.example .env && docker compose -f compose.dev.yaml up -d --
 | http://localhost:8000 | Finetuning-Pipeline-worker API + Swagger `/docs` |
 | http://localhost:9101 | MinIO 콘솔 (`wfp-minio` / `wfp-minio-secret`) |
 | http://localhost:8125 | MailHog (이메일 트랩) |
+
+#### Apple Silicon (MPS) — 호스트 직접 실행
+
+Docker for Mac은 Linux VM에서 동작 → MPS 미접근. macOS에서 GPU를 활용하려면 인프라만 컨테이너로 실행하고 워커/웹은 호스트에서 직접 기동:
+
+```bash
+make docker-infra   # postgres/redis/minio/mailhog만 기동
+make dev-worker     # 별도 터미널 — 호스트 venv에서 uvicorn 실행 (MPS 자동 사용)
+make dev-web        # 별도 터미널 — pnpm dev
+```
 
 상세 가이드 + 운영 환경(Traefik TLS + GPU + 백업): [`docker/README.md`](docker/README.md)
 
@@ -343,12 +367,13 @@ curl http://localhost:8000/auth/me -H "Authorization: Bearer $TOKEN"
 ### Docker Compose (개발)
 
 ```bash
-make docker-dev
-# 또는:
-cd docker && docker compose -f compose.dev.yaml up -d --build
+make docker-dev          # GPU 자동 감지
+# 또는 명시:
+make docker-dev-cpu      # CPU 강제
+make docker-dev-gpu      # GPU 강제 (nvidia 런타임 필요)
 ```
 
-서비스: `worker` (FastAPI), `web` (Next.js), `postgres` (16), `redis` (7), `minio`, `mailhog`.
+서비스: `worker` (FastAPI), `web` (Next.js), `postgres` (16), `redis` (7), `minio`, `mailhog`, `reaper` 사이드카.
 상세: [`docker/README.md`](docker/README.md)
 
 ### Docker Compose (운영)
@@ -356,27 +381,65 @@ cd docker && docker compose -f compose.dev.yaml up -d --build
 ```bash
 cd docker
 cp .env.example .env   # 모든 비번/도메인 채우기 (POSTGRES_PASSWORD, NEXTAUTH_SECRET 등)
-docker compose -f compose.prod.yaml up -d --build
+cd ..
+make docker-prod         # GPU 자동 감지 — 권장
+# 또는:
+make docker-prod-cpu     # CPU 강제
+make docker-prod-gpu     # GPU 강제
 ```
 
 운영 추가 사항:
 - **Traefik** reverse proxy + Let's Encrypt 자동 인증서
-- **GPU 워커** (`Dockerfile.gpu` — CUDA 12.1 베이스)
+- **GPU 워커** (`Dockerfile.gpu` — `python:3.12-slim` 베이스, PyTorch `+cu121` 휠로 CUDA 런타임 번들)
 - **백업 사이드카** — 일 1회 PostgreSQL → MinIO dump
 - 내부 포트만 노출 (web/worker는 외부 비공개)
 
 ### Makefile 명령
 
 ```bash
-make help              # 명령 목록
-make bootstrap         # uv + pnpm 의존성 설치
-make test              # Finetuning-Pipeline-worker pytest 90개
-make build             # Docker 이미지 빌드 (worker + web)
-make docker-dev        # 개발 스택 기동 (백그라운드)
-make docker-logs       # 워커 로그 추적
-make docker-down       # 정지
-make ci                # lint + typecheck + test
+make help                   # 명령 목록
+make bootstrap              # uv + pnpm 의존성 설치
+make docker-info            # 현재 감지된 환경 (경로 + GPU)
+make test                   # Finetuning-Pipeline-worker pytest
+make build                  # Docker 이미지 빌드 (worker + web)
+
+# 스택 기동 — GPU 자동 감지
+make docker-dev             # 개발 (백그라운드)
+make docker-prod            # 운영
+
+# 강제 모드
+make docker-dev-cpu         # CPU 강제 (dev)
+make docker-dev-gpu         # GPU 강제 (dev)
+make docker-prod-cpu        # CPU 강제 (prod)
+make docker-prod-gpu        # GPU 강제 (prod)
+
+# 인프라만 (Apple Silicon MPS 등 호스트 직접 실행용)
+make docker-infra           # postgres/redis/minio/mailhog
+make dev-worker             # 호스트에서 워커 직접 실행
+make dev-web                # 호스트에서 프론트엔드 직접 실행
+
+# 관리
+make docker-logs            # 워커 로그 추적
+make docker-ps              # 컨테이너 상태
+make docker-down            # 정지 (dev + prod 둘 다)
+make docker-clean           # 정지 + 볼륨 삭제 (데이터 손실)
+make ci                     # lint + typecheck + test
 ```
+
+### 환경 자동 감지
+
+Makefile은 두 가지를 자동 감지한다:
+
+1. **컴포넌트 경로** — `WORKER_DIR` / `FRONTEND_DIR`:
+   - 우선순위: env var → 시블링 디렉토리 → macOS 워크스페이스 fallback
+   - 서버: ops와 worker/frontend가 같은 부모 디렉토리에 있으면 자동 인식
+   - override: `WORKER_DIR=/custom/path make docker-prod`
+
+2. **GPU 유무** — `HAS_GPU`:
+   - `nvidia-smi -L`로 검사 → GPU 인식 시 `compose.*.gpu.yaml` 오버라이드 추가
+   - macOS / 드라이버 미설치 → 자동 CPU 모드
+
+`make docker-info`로 현재 감지 결과 확인.
 
 ### 향후 작업
 

@@ -4,11 +4,41 @@
 # =============================================================================
 
 SHELL := /bin/bash
-.PHONY: help bootstrap dev test lint build clean docker-dev docker-prod docker-down docker-logs
+.PHONY: help bootstrap dev test lint build clean \
+        docker-dev docker-dev-cpu docker-dev-gpu \
+        docker-prod docker-prod-cpu docker-prod-gpu \
+        docker-down docker-logs
 
-# 프로젝트 루트 경로 (각 컴포넌트 독립 디렉토리)
-WORKER_DIR   := /Users/wise/Developer/DA(Python,R,...)/Finetuning-Pipeline-worker
-FRONTEND_DIR := /Users/wise/Developer/Web(Node,Script)/Finetuning-Pipeline-frontend
+# -----------------------------------------------------------------------------
+# 컴포넌트 디렉토리 자동 감지
+# 우선순위:
+#   1) 환경 변수로 override   (export WORKER_DIR=...)
+#   2) Makefile과 같은 부모의 시블링 (서버 배포: ops/worker/frontend 형제 구조)
+#   3) macOS 워크스페이스 절대경로 (개발 환경 fallback)
+# -----------------------------------------------------------------------------
+MAKEFILE_DIR := $(abspath $(dir $(lastword $(MAKEFILE_LIST))))
+
+WORKER_DIR ?= $(abspath $(strip $(if $(wildcard $(MAKEFILE_DIR)/../Finetuning-Pipeline-worker),$(MAKEFILE_DIR)/../Finetuning-Pipeline-worker,/Users/wise/Developer/DA(Python,R,...)/Finetuning-Pipeline-worker)))
+
+FRONTEND_DIR ?= $(abspath $(strip $(if $(wildcard $(MAKEFILE_DIR)/../Finetuning-Pipeline-frontend),$(MAKEFILE_DIR)/../Finetuning-Pipeline-frontend,/Users/wise/Developer/Web(Node,Script)/Finetuning-Pipeline-frontend)))
+
+# -----------------------------------------------------------------------------
+# GPU 자동 감지 — nvidia-smi 존재 + GPU 인식 시 GPU 모드
+# -----------------------------------------------------------------------------
+HAS_GPU := $(shell command -v nvidia-smi >/dev/null 2>&1 && nvidia-smi -L 2>/dev/null | grep -q '^GPU' && echo 1 || echo 0)
+
+ifeq ($(HAS_GPU),1)
+DEV_FILES    := -f compose.dev.yaml -f compose.dev.gpu.yaml
+PROD_FILES   := -f compose.prod.yaml -f compose.prod.gpu.yaml
+GPU_MSG      := GPU 감지됨 → GPU 모드 (Dockerfile.gpu + nvidia 런타임)
+else
+DEV_FILES    := -f compose.dev.yaml
+PROD_FILES   := -f compose.prod.yaml
+GPU_MSG      := GPU 미감지 → CPU 모드 (Dockerfile)
+endif
+
+# docker compose에 빌드 컨텍스트 절대경로 주입 (workspace/server 경로 차이 흡수)
+DC_ENV := WFP_WORKER_DIR='$(WORKER_DIR)' WFP_FRONTEND_DIR='$(FRONTEND_DIR)'
 
 # 기본 — help
 .DEFAULT_GOAL := help
@@ -81,8 +111,15 @@ build: build-worker build-web ## 전체 이미지 빌드
 # -----------------------------------------------------------------------------
 # Docker Compose
 # -----------------------------------------------------------------------------
-docker-dev: ## 개발 스택 기동 (백그라운드) — worker/web 포함
-	cd docker && docker compose -f compose.dev.yaml up -d --build
+docker-dev: ## 개발 스택 기동 (GPU 자동 감지)
+	@echo "→ $(GPU_MSG)"
+	cd docker && $(DC_ENV) docker compose $(DEV_FILES) up -d --build
+
+docker-dev-cpu: ## 개발 스택 기동 (CPU 강제)
+	cd docker && $(DC_ENV) docker compose -f compose.dev.yaml up -d --build
+
+docker-dev-gpu: ## 개발 스택 기동 (GPU 강제 — nvidia 런타임 필요)
+	cd docker && $(DC_ENV) docker compose -f compose.dev.yaml -f compose.dev.gpu.yaml up -d --build
 
 docker-infra: ## 인프라만 기동 (postgres/redis/minio/mailhog) — worker/web은 호스트 직접 실행
 	cd docker && docker compose -f compose.infra.yaml up -d
@@ -90,23 +127,40 @@ docker-infra: ## 인프라만 기동 (postgres/redis/minio/mailhog) — worker/w
 	@echo "  make dev-worker   (Apple Silicon MPS / 호스트 GPU 직접 사용)"
 	@echo "  make dev-web"
 
-docker-prod: ## 운영 스택 기동
-	cd docker && docker compose -f compose.prod.yaml up -d --build
+docker-prod: ## 운영 스택 기동 (GPU 자동 감지)
+	@echo "→ $(GPU_MSG)"
+	cd docker && $(DC_ENV) docker compose $(PROD_FILES) up -d --build
 
-docker-down: ## 컨테이너 정지 (볼륨 유지)
-	cd docker && docker compose -f compose.dev.yaml down
+docker-prod-cpu: ## 운영 스택 기동 (CPU 강제)
+	cd docker && $(DC_ENV) docker compose -f compose.prod.yaml up -d --build
+
+docker-prod-gpu: ## 운영 스택 기동 (GPU 강제 — nvidia 런타임 필요)
+	cd docker && $(DC_ENV) docker compose -f compose.prod.yaml -f compose.prod.gpu.yaml up -d --build
+
+docker-down: ## 컨테이너 정지 (볼륨 유지) — dev/prod 모두 정지
+	cd docker && $(DC_ENV) docker compose $(DEV_FILES) down 2>/dev/null || true
+	cd docker && $(DC_ENV) docker compose $(PROD_FILES) down 2>/dev/null || true
 
 docker-infra-down: ## 인프라 컨테이너 정지
 	cd docker && docker compose -f compose.infra.yaml down
 
 docker-clean: ## 컨테이너 + 볼륨 삭제 (주의 — 데이터 손실)
-	cd docker && docker compose -f compose.dev.yaml down -v
+	cd docker && $(DC_ENV) docker compose $(DEV_FILES) down -v
 
 docker-logs: ## 워커 로그 추적
-	cd docker && docker compose -f compose.dev.yaml logs -f worker
+	cd docker && $(DC_ENV) docker compose $(DEV_FILES) logs -f worker
 
 docker-ps: ## 컨테이너 상태
-	cd docker && docker compose -f compose.dev.yaml ps
+	cd docker && $(DC_ENV) docker compose $(DEV_FILES) ps
+
+docker-info: ## 현재 감지된 환경 확인 (경로 + GPU)
+	@echo "MAKEFILE_DIR  = $(MAKEFILE_DIR)"
+	@echo "WORKER_DIR    = $(WORKER_DIR)"
+	@echo "FRONTEND_DIR  = $(FRONTEND_DIR)"
+	@echo "HAS_GPU       = $(HAS_GPU)"
+	@echo "$(GPU_MSG)"
+	@echo "DEV_FILES     = $(DEV_FILES)"
+	@echo "PROD_FILES    = $(PROD_FILES)"
 
 # -----------------------------------------------------------------------------
 # 문서 / 정리

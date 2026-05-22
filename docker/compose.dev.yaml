@@ -66,7 +66,7 @@ services:
   # ---------------------------------------------------------------------------
   web:
     build:
-      context: ../../Finetuning-Pipeline-frontend
+      context: ${WFP_FRONTEND_DIR:-../../Finetuning-Pipeline-frontend}
       dockerfile: Dockerfile
     image: wfp-frontend:dev
     pull_policy: build      # registry pull 시도 차단 — 로컬 빌드만
