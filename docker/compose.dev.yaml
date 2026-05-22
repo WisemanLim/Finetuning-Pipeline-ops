@@ -1,0 +1,194 @@
+# =============================================================================
+# WFP 개발 환경 — Docker Compose v2
+#
+# 실행:
+#   cd Finetuning-Pipeline-ops/docker
+#   cp .env.example .env
+#   docker compose -f compose.dev.yaml up --build
+#
+# 서비스:
+#   web        — Next.js 14 (3000)
+#   worker     — FastAPI Finetuning-Pipeline-worker (8000)
+#   postgres   — PostgreSQL 16 (5432)
+#   redis      — Redis 7 (6379)
+#   minio      — S3 호환 객체 스토리지 (9000 API + 9001 콘솔)
+#   mailhog    — 개발 SMTP (1025 SMTP + 8025 UI)
+# =============================================================================
+
+name: wfp-dev
+
+services:
+  # ---------------------------------------------------------------------------
+  # Finetuning-Pipeline-worker — FastAPI 9-Stage 파이프라인 (CPU 모드, GPU는 compose.gpu.yaml)
+  # ---------------------------------------------------------------------------
+  worker:
+    build:
+      context: ../../../DA(Python,R,...)/Finetuning-Pipeline-worker
+      dockerfile: Dockerfile
+    image: wfp-worker:dev
+    pull_policy: build      # registry pull 시도 차단 — 로컬 빌드만
+    container_name: wfp-worker
+    ports:
+      - "8000:8000"
+    environment:
+      WFP_WORKER_HOST: 0.0.0.0
+      WFP_WORKER_PORT: 8000
+      SUPERVISOR_ID: ${SUPERVISOR_ID:?SUPERVISOR_ID required}
+      SUPERVISOR_PASSWORD: ${SUPERVISOR_PASSWORD:?SUPERVISOR_PASSWORD required}
+      HF_TOKEN: ${HF_TOKEN:-}
+      # dev 기본은 SQLite (postgres 의존성 ↓).
+      # postgres로 전환: .env에 DATABASE_URL=postgresql://wfp:wfp-dev@postgres:5432/wfp
+      DATABASE_URL: ${DATABASE_URL:-sqlite:////data/wfp.db}
+      JWT_SECRET: ${NEXTAUTH_SECRET:-dev-jwt-secret-CHANGE-ME-32-bytes-min}
+      REDIS_URL: redis://redis:6379/0
+      S3_ENDPOINT: http://minio:9000
+      S3_ACCESS_KEY: ${MINIO_ROOT_USER:-wfp-minio}
+      S3_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-wfp-minio-secret}
+      S3_BUCKET: wfp-artifacts
+    volumes:
+      # 호스트의 ~/.wfp 캐시 공유 (모델 재다운로드 방지)
+      - wfp_cache:/home/wfp/.wfp
+      # SQLite DB 영속화 (DATABASE_URL=sqlite:////data/wfp.db)
+      - wfp_data:/data
+      # HW 규칙 외부화 — 코드 재빌드 없이 수정 가능
+      - ../rules:/app/ops/rules:ro
+    depends_on:
+      # dev 기본 sqlite → postgres 대기 불필요. postgres 모드 시 .env에서 활성.
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    networks: [wfp]
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # Finetuning-Pipeline-frontend — Next.js 14
+  # ---------------------------------------------------------------------------
+  web:
+    build:
+      context: ../../Finetuning-Pipeline-frontend
+      dockerfile: Dockerfile
+    image: wfp-frontend:dev
+    pull_policy: build      # registry pull 시도 차단 — 로컬 빌드만
+    container_name: wfp-web
+    ports:
+      - "3000:3000"
+    environment:
+      NODE_ENV: production
+      WFP_WORKER_URL: http://worker:8000
+      NEXTAUTH_SECRET: ${NEXTAUTH_SECRET:-dev-secret-replace-in-prod}
+      NEXTAUTH_URL: ${NEXTAUTH_URL:-http://localhost:3000}
+      GRADIO_BASE_URL: ${GRADIO_BASE_URL:-http://localhost:7860}
+      NEXT_PUBLIC_AUTH_DISABLED: ${NEXT_PUBLIC_AUTH_DISABLED:-true}
+    depends_on:
+      - worker
+    networks: [wfp]
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # PostgreSQL — 운영 DB (개발 환경에서도 prod 동작 검증)
+  # ---------------------------------------------------------------------------
+  postgres:
+    image: postgres:16-alpine
+    container_name: wfp-postgres
+    environment:
+      POSTGRES_USER: wfp
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-wfp-dev}
+      POSTGRES_DB: wfp
+    ports:
+      - "5532:5432"    # 외부 5532 (다른 PostgreSQL 충돌 회피, 컨테이너 내부는 5432 유지)
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U wfp -d wfp"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks: [wfp]
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # Redis — 잡 큐 + 이벤트 스트림 (Redis Streams)
+  # ---------------------------------------------------------------------------
+  redis:
+    image: redis:7-alpine
+    container_name: wfp-redis
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - "6479:6379"    # 외부 6479 (다른 Redis 충돌 회피)
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks: [wfp]
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # MinIO — S3 호환 스토리지 (모델 / 데이터셋 / 체크포인트 / 아티팩트)
+  # ---------------------------------------------------------------------------
+  minio:
+    image: minio/minio:latest
+    container_name: wfp-minio
+    command: ["server", "/data", "--console-address", ":9001"]
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-wfp-minio}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-wfp-minio-secret}
+    ports:
+      - "9100:9000"    # S3 API (외부 9100, 다른 MinIO 충돌 회피)
+      - "9101:9001"    # 웹 콘솔 (외부 9101)
+    volumes:
+      - minio_data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks: [wfp]
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # Reaper — 자원 회수 cron 사이드카 (매 30분 실행, PRD §10.3)
+  # ---------------------------------------------------------------------------
+  reaper:
+    image: python:3.12-slim
+    container_name: wfp-reaper
+    command: >
+      sh -c "pip install --quiet --no-cache-dir && \
+             while true; do python /scripts/reaper.py; sleep 1800; done"
+    environment:
+      WFP_HEARTBEAT_TIMEOUT_MIN: ${WFP_HEARTBEAT_TIMEOUT_MIN:-30}
+      WFP_DISK_THRESHOLD_PCT: ${WFP_DISK_THRESHOLD_PCT:-80}
+      WFP_DATA_DIR: /data
+    volumes:
+      - wfp_data:/data
+      - ../scripts:/scripts:ro
+    depends_on:
+      - worker
+    networks: [wfp]
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # MailHog — 회원 이메일 인증 개발 환경 SMTP 트랩
+  # ---------------------------------------------------------------------------
+  mailhog:
+    image: mailhog/mailhog:latest
+    container_name: wfp-mailhog
+    ports:
+      - "1125:1025"    # SMTP (외부 1125)
+      - "8125:8025"    # 웹 UI (외부 8125)
+    networks: [wfp]
+    restart: unless-stopped
+
+volumes:
+  wfp_cache:
+  wfp_data:        # SQLite DB 파일 영속
+  pg_data:
+  redis_data:
+  minio_data:
+
+networks:
+  wfp:
+    driver: bridge

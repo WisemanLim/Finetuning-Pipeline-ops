@@ -1,0 +1,163 @@
+# HW → 파이프라인 플랜 결정 규칙
+# 관리자가 이 파일을 수정하여 운영 환경에 맞게 조정 가능
+# 조건은 위에서 아래로 순서대로 평가 (첫 번째 매칭 채택)
+
+version: "1.0"
+
+rules:
+  # ─────────────────────────────────────────
+  # NVIDIA GPU 규칙 (VRAM 기준 내림차순)
+  # ─────────────────────────────────────────
+  - id: nvidia_80gb_plus
+    condition:
+      gpu_vendor: nvidia
+      vram_gb_min: 80
+    plan:
+      max_model_params_b: 70
+      strategies: [lora, full_ft]
+      quantization: [bf16, int4]
+      recommended_strategy: lora
+      recommended_quant: bf16
+      max_seq_length: 8192
+      batch_size: 4
+      gradient_accumulation: 4
+
+  - id: nvidia_48gb
+    condition:
+      gpu_vendor: nvidia
+      vram_gb_min: 48
+      vram_gb_max: 79
+    plan:
+      max_model_params_b: 34
+      strategies: [lora, qlora]
+      quantization: [int4, int8]
+      recommended_strategy: lora
+      recommended_quant: int4
+      max_seq_length: 4096
+      batch_size: 4
+      gradient_accumulation: 4
+
+  - id: nvidia_24gb
+    condition:
+      gpu_vendor: nvidia
+      vram_gb_min: 24
+      vram_gb_max: 47
+    plan:
+      max_model_params_b: 13
+      strategies: [qlora]
+      quantization: [int4]
+      recommended_strategy: qlora
+      recommended_quant: int4
+      max_seq_length: 2048
+      batch_size: 2
+      gradient_accumulation: 8
+
+  - id: nvidia_16gb
+    condition:
+      gpu_vendor: nvidia
+      vram_gb_min: 16
+      vram_gb_max: 23
+    plan:
+      max_model_params_b: 8
+      strategies: [qlora]
+      quantization: [int4]
+      recommended_strategy: qlora
+      recommended_quant: int4
+      max_seq_length: 2048
+      batch_size: 2
+      gradient_accumulation: 8
+
+  - id: nvidia_12gb
+    condition:
+      gpu_vendor: nvidia
+      vram_gb_min: 12
+      vram_gb_max: 15
+    plan:
+      max_model_params_b: 8
+      strategies: [qlora]
+      quantization: [int4]
+      recommended_strategy: qlora
+      recommended_quant: int4
+      max_seq_length: 1024
+      batch_size: 1
+      gradient_accumulation: 16
+
+  - id: nvidia_6to8gb
+    condition:
+      gpu_vendor: nvidia
+      vram_gb_min: 6
+      vram_gb_max: 11
+    plan:
+      max_model_params_b: 3
+      strategies: [qlora]
+      quantization: [int4]
+      recommended_strategy: qlora
+      recommended_quant: int4
+      max_seq_length: 512
+      batch_size: 1
+      gradient_accumulation: 16
+
+  # ─────────────────────────────────────────
+  # Apple Silicon (Unified Memory)
+  # ─────────────────────────────────────────
+  - id: apple_silicon_32gb_plus
+    condition:
+      gpu_vendor: apple
+      unified_memory_gb_min: 32
+    plan:
+      max_model_params_b: 7
+      strategies: [qlora]
+      quantization: [int4]
+      recommended_strategy: qlora
+      recommended_quant: int4
+      backend: mps
+      max_seq_length: 2048
+      batch_size: 1
+      gradient_accumulation: 8
+
+  - id: apple_silicon_16gb
+    condition:
+      gpu_vendor: apple
+      unified_memory_gb_min: 16
+      unified_memory_gb_max: 31
+    plan:
+      max_model_params_b: 3
+      strategies: [qlora]
+      quantization: [int4]
+      recommended_strategy: qlora
+      recommended_quant: int4
+      backend: mps
+      max_seq_length: 1024
+      batch_size: 1
+      gradient_accumulation: 8
+
+  # ─────────────────────────────────────────
+  # CPU 전용 (GPU 없음)
+  # ─────────────────────────────────────────
+  - id: cpu_only_32gb_plus
+    condition:
+      gpu_vendor: none
+      ram_gb_min: 32
+    plan:
+      max_model_params_b: 1
+      strategies: [qlora]
+      quantization: [int4]
+      recommended_strategy: qlora
+      recommended_quant: int4
+      backend: cpu
+      max_seq_length: 512
+      batch_size: 1
+      gradient_accumulation: 32
+      warning: "CPU-only 학습은 매우 느립니다. 클라우드 GPU 사용을 권장합니다."
+
+  - id: cpu_only_fallback
+    condition:
+      gpu_vendor: none
+    plan:
+      max_model_params_b: 0
+      strategies: []
+      quantization: []
+      recommended_strategy: null
+      recommended_quant: null
+      backend: cpu
+      warning: "RAM 부족. 학습 불가. 클라우드 GPU 사용을 권장합니다."

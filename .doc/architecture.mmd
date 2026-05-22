@@ -1,0 +1,111 @@
+flowchart TB
+    subgraph CLIENT["Client Layer"]
+        direction LR
+        DESKTOP["Desktop App<br/>(Tauri WebView)<br/>- Next.js 빌드 재사용<br/>- Native FS / Local GPU"]
+        WEB["Web App<br/>(Next.js 14 App Router)<br/>+ shadcn/ui + TanStack Query<br/>+ Tailwind + next-intl<br/>- 5-step 위자드<br/>- 어드민 대시보드"]
+        PLAY["Gradio Playground<br/>(추론 시연 iframe)<br/>- gr.ChatInterface<br/>- 잡별 격리 프로세스"]
+    end
+
+    subgraph EDGE["API Edge"]
+        GATEWAY["API Gateway (NestJS)<br/>- Auth.js / JWT / OAuth<br/>- REST + WebSocket<br/>- Gradio 프록시"]
+    end
+
+    subgraph SERVICES["Backend Services (NestJS)"]
+        direction LR
+        JOB["Job Service<br/>잡 생성/조회/이력"]
+        CATALOG["Catalog Service<br/>KSIC 카테고리/모델/프리셋"]
+        ADMIN["Admin Service<br/>사용자/리소스/감사"]
+        PROXY["Worker Proxy<br/>큐 디스패치/헬스체크"]
+    end
+
+    BROKER["Message Broker<br/>(Redis Streams / NATS)<br/>잡 큐 + 이벤트 스트림"]
+
+    subgraph WORKERS["ML Worker Cluster (Python 3.11 + FastAPI)"]
+        direction TB
+        SERVER["FastAPI Server<br/>uv run + uvicorn<br/>/jobs /ws /hw/caps"]
+        subgraph STAGES["9-Stage Pipeline (wfp_worker)"]
+            direction LR
+            S1["Stage 1<br/>Init/Goal"]
+            S2["Stage 2<br/>HW Probe"]
+            S3["Stage 3<br/>Env Setup"]
+            S4["Stage 4<br/>Model Pick<br/>+ Download"]
+            S5["Stage 5<br/>Data Collect<br/>+ Clean"]
+            S6["Stage 6<br/>Train Config"]
+            S7["Stage 7<br/>Train Run<br/>(SFT/LoRA/QLoRA)"]
+            S8["Stage 8<br/>Eval<br/>(PPL/ROUGE/F1)"]
+            S9["Stage 9<br/>Package<br/>(Adapter/GGUF/ZIP)"]
+        end
+    end
+
+    subgraph STORAGE["Storage Layer"]
+        direction LR
+        OBJ["Object Storage<br/>MinIO (dev) / S3 (prod)<br/>로컬 FS (desktop)<br/>모델·데이터셋·체크포인트·아티팩트"]
+        DB["Database<br/>SQLite (local/desktop)<br/>PostgreSQL 16 (prod)"]
+    end
+
+    subgraph OBS["Observability & Ops"]
+        direction LR
+        METRICS["Prometheus + Loki + OTel<br/>구조화 JSON 로그"]
+        REAPER["Reaper / Cron<br/>자원 회수 / 백업"]
+    end
+
+    EXTERNAL["External Sources<br/>Hugging Face Hub<br/>AI Hub / 화이트리스트 웹"]
+
+    DESKTOP -.HTTPS/WS.-> GATEWAY
+    WEB -.HTTPS/WS.-> GATEWAY
+    WEB -.iframe.-> PLAY
+    PLAY -.HTTP.-> GATEWAY
+    GATEWAY --> JOB
+    GATEWAY --> CATALOG
+    GATEWAY --> ADMIN
+    GATEWAY --> PROXY
+    JOB --> BROKER
+    PROXY --> BROKER
+    ADMIN --> BROKER
+    BROKER <--> SERVER
+    SERVER --> S1
+    S1 --> S2
+    S2 --> S3
+    S3 --> S4
+    S4 --> S5
+    S5 --> S6
+    S6 --> S7
+    S7 --> S8
+    S8 --> S9
+    S4 --> EXTERNAL
+    S5 --> EXTERNAL
+    S9 --> OBJ
+    S7 --> OBJ
+    S5 --> OBJ
+    PLAY --> OBJ
+    JOB --> DB
+    CATALOG --> DB
+    ADMIN --> DB
+    SERVER --> DB
+    WORKERS --> METRICS
+    SERVICES --> METRICS
+    REAPER --> DB
+    REAPER --> OBJ
+    REAPER --> BROKER
+
+    classDef client fill:#e3f2fd,stroke:#1565c0,color:#0d47a1
+    classDef play fill:#e1f5fe,stroke:#0277bd,color:#01579b
+    classDef edge fill:#fff3e0,stroke:#e65100,color:#bf360c
+    classDef svc fill:#f3e5f5,stroke:#6a1b9a,color:#4a148c
+    classDef worker fill:#e8f5e9,stroke:#2e7d32,color:#1b5e20
+    classDef stage fill:#f1f8e9,stroke:#558b2f,color:#33691e
+    classDef store fill:#fffde7,stroke:#f9a825,color:#f57f17
+    classDef ops fill:#eceff1,stroke:#455a64,color:#263238
+    classDef ext fill:#fce4ec,stroke:#ad1457,color:#880e4f
+    classDef broker fill:#ede7f6,stroke:#4527a0,color:#311b92
+
+    class DESKTOP,WEB client
+    class PLAY play
+    class GATEWAY edge
+    class JOB,CATALOG,ADMIN,PROXY svc
+    class SERVER worker
+    class S1,S2,S3,S4,S5,S6,S7,S8,S9 stage
+    class OBJ,DB store
+    class METRICS,REAPER ops
+    class EXTERNAL ext
+    class BROKER broker

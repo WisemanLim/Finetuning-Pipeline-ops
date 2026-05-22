@@ -1,0 +1,88 @@
+# =============================================================================
+# WFP 인프라 전용 — Docker Compose
+#
+# worker / web은 호스트에서 직접 실행 (Apple Silicon MPS, NVIDIA GPU 직접 접근).
+# 이 파일은 인프라 서비스만 기동.
+#
+# 실행:
+#   make dev-infra            # 인프라 기동
+#   make dev-worker           # 별도 터미널 — 호스트에서 worker 실행
+#   make dev-web              # 별도 터미널 — 호스트에서 frontend 실행
+# =============================================================================
+
+name: wfp-infra
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: wfp-postgres
+    environment:
+      POSTGRES_USER: wfp
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-wfp-dev}
+      POSTGRES_DB: wfp
+    ports:
+      - "5532:5432"
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U wfp -d wfp"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks: [wfp]
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    container_name: wfp-redis
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - "6479:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks: [wfp]
+    restart: unless-stopped
+
+  minio:
+    image: minio/minio:latest
+    container_name: wfp-minio
+    command: ["server", "/data", "--console-address", ":9001"]
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-wfp-minio}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-wfp-minio-secret}
+    ports:
+      - "9100:9000"
+      - "9101:9001"
+    volumes:
+      - minio_data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks: [wfp]
+    restart: unless-stopped
+
+  mailhog:
+    image: mailhog/mailhog:latest
+    platform: linux/amd64
+    container_name: wfp-mailhog
+    ports:
+      - "1125:1025"
+      - "8125:8025"
+    networks: [wfp]
+    restart: unless-stopped
+
+volumes:
+  pg_data:
+  redis_data:
+  minio_data:
+
+networks:
+  wfp:
+    driver: bridge

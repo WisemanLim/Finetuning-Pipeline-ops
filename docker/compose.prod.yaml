@@ -1,0 +1,208 @@
+# =============================================================================
+# WFP 운영 환경 — Docker Compose
+#
+# compose.dev.yaml과 차이점:
+#   - Traefik reverse proxy 추가 (TLS + 자동 인증서)
+#   - 포트 외부 노출 최소화 (web/worker는 내부 네트워크만)
+#   - 비밀번호 환경 변수 강제 (기본값 제거)
+#   - 백업 사이드카 (postgres dump → minio)
+#   - worker는 Dockerfile.gpu로 빌드 (NVIDIA 런타임)
+#
+# 실행:
+#   cp .env.example .env  # 필수 값 모두 채울 것
+#   docker compose -f compose.prod.yaml up -d
+# =============================================================================
+
+name: wfp-prod
+
+services:
+  # ---------------------------------------------------------------------------
+  # Traefik — TLS termination + 자동 인증서 (Let's Encrypt)
+  # ---------------------------------------------------------------------------
+  traefik:
+    image: traefik:v3.1
+    container_name: wfp-traefik
+    command:
+      - "--providers.docker=true"
+      - "--providers.docker.exposedbydefault=false"
+      - "--entrypoints.web.address=:80"
+      - "--entrypoints.websecure.address=:443"
+      - "--entrypoints.web.http.redirections.entrypoint.to=websecure"
+      - "--entrypoints.web.http.redirections.entrypoint.scheme=https"
+      - "--certificatesresolvers.le.acme.email=${ACME_EMAIL}"
+      - "--certificatesresolvers.le.acme.storage=/letsencrypt/acme.json"
+      - "--certificatesresolvers.le.acme.tlschallenge=true"
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - traefik_certs:/letsencrypt
+    networks: [wfp]
+    restart: always
+
+  # ---------------------------------------------------------------------------
+  # Finetuning-Pipeline-worker — GPU 버전
+  # ---------------------------------------------------------------------------
+  worker:
+    build:
+      context: ../../../DA(Python,R,...)/Finetuning-Pipeline-worker
+      dockerfile: Dockerfile.gpu
+    image: wfp-worker:prod
+    pull_policy: build
+    environment:
+      WFP_WORKER_HOST: 0.0.0.0
+      WFP_WORKER_PORT: 8000
+      SUPERVISOR_ID: ${SUPERVISOR_ID:?SUPERVISOR_ID required}
+      SUPERVISOR_PASSWORD: ${SUPERVISOR_PASSWORD:?SUPERVISOR_PASSWORD required}
+      HF_TOKEN: ${HF_TOKEN:?HF_TOKEN required}
+      DATABASE_URL: postgresql://wfp:${POSTGRES_PASSWORD:?required}@postgres:5432/wfp
+      REDIS_URL: redis://redis:6379/0
+      S3_ENDPOINT: http://minio:9000
+      S3_ACCESS_KEY: ${MINIO_ROOT_USER:?required}
+      S3_SECRET_KEY: ${MINIO_ROOT_PASSWORD:?required}
+      S3_BUCKET: wfp-artifacts
+    volumes:
+      - wfp_cache:/home/wfp/.wfp
+      - ../rules:/app/ops/rules:ro
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
+      minio: { condition: service_healthy }
+    # NVIDIA GPU 할당
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    networks: [wfp]
+    restart: always
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.worker.rule=Host(`api.${DOMAIN}`)"
+      - "traefik.http.routers.worker.entrypoints=websecure"
+      - "traefik.http.routers.worker.tls.certresolver=le"
+      - "traefik.http.services.worker.loadbalancer.server.port=8000"
+
+  # ---------------------------------------------------------------------------
+  # Finetuning-Pipeline-frontend
+  # ---------------------------------------------------------------------------
+  web:
+    build:
+      context: ../../Finetuning-Pipeline-frontend
+      dockerfile: Dockerfile
+    image: wfp-frontend:prod
+    pull_policy: build
+    environment:
+      NODE_ENV: production
+      WFP_WORKER_URL: http://worker:8000
+      NEXTAUTH_SECRET: ${NEXTAUTH_SECRET:?required}
+      NEXTAUTH_URL: https://${DOMAIN}
+      GRADIO_BASE_URL: ${GRADIO_BASE_URL:-}
+    depends_on:
+      - worker
+    networks: [wfp]
+    restart: always
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.web.rule=Host(`${DOMAIN}`)"
+      - "traefik.http.routers.web.entrypoints=websecure"
+      - "traefik.http.routers.web.tls.certresolver=le"
+      - "traefik.http.services.web.loadbalancer.server.port=3000"
+
+  # ---------------------------------------------------------------------------
+  # PostgreSQL
+  # ---------------------------------------------------------------------------
+  postgres:
+    image: postgres:16-alpine
+    container_name: wfp-postgres
+    environment:
+      POSTGRES_USER: wfp
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?required}
+      POSTGRES_DB: wfp
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U wfp -d wfp"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks: [wfp]
+    restart: always
+
+  # ---------------------------------------------------------------------------
+  # Redis
+  # ---------------------------------------------------------------------------
+  redis:
+    image: redis:7-alpine
+    container_name: wfp-redis
+    command: ["redis-server", "--appendonly", "yes", "--requirepass", "${REDIS_PASSWORD:?required}"]
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD}", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks: [wfp]
+    restart: always
+
+  # ---------------------------------------------------------------------------
+  # MinIO
+  # ---------------------------------------------------------------------------
+  minio:
+    image: minio/minio:latest
+    container_name: wfp-minio
+    command: ["server", "/data", "--console-address", ":9001"]
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:?required}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?required}
+    volumes:
+      - minio_data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks: [wfp]
+    restart: always
+
+  # ---------------------------------------------------------------------------
+  # 백업 사이드카 — 일 1회 PostgreSQL dump → MinIO
+  # ---------------------------------------------------------------------------
+  backup:
+    image: postgres:16-alpine
+    container_name: wfp-backup
+    environment:
+      PGPASSWORD: ${POSTGRES_PASSWORD}
+      AWS_ACCESS_KEY_ID: ${MINIO_ROOT_USER}
+      AWS_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD}
+    command: >
+      sh -c "
+      apk add --no-cache aws-cli &&
+      while true; do
+        ts=$$(date +%Y%m%d_%H%M%S);
+        pg_dump -h postgres -U wfp wfp | gzip > /tmp/wfp_$$ts.sql.gz &&
+        aws --endpoint-url http://minio:9000 s3 cp /tmp/wfp_$$ts.sql.gz s3://wfp-backups/postgres/ &&
+        rm /tmp/wfp_$$ts.sql.gz;
+        sleep 86400;
+      done
+      "
+    depends_on:
+      - postgres
+      - minio
+    networks: [wfp]
+    restart: always
+
+volumes:
+  wfp_cache:
+  pg_data:
+  redis_data:
+  minio_data:
+  traefik_certs:
+
+networks:
+  wfp:
+    driver: bridge
