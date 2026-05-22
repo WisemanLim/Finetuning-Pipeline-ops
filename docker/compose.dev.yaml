@@ -23,7 +23,7 @@ services:
   # ---------------------------------------------------------------------------
   worker:
     build:
-      context: ../../../DA(Python,R,...)/Finetuning-Pipeline-worker
+      context: ${WFP_WORKER_DIR:-../../Finetuning-Pipeline-worker}
       dockerfile: Dockerfile
     image: wfp-worker:dev
     pull_policy: build      # registry pull 시도 차단 — 로컬 빌드만

@@ -1,6 +1,6 @@
 # WFP Docker 가이드
 
-`ml-worker`, `ml-frontend`, 인프라(PostgreSQL/Redis/MinIO)를
+`Finetuning-Pipeline-worker`, `Finetuning-Pipeline-frontend`, 인프라(PostgreSQL/Redis/MinIO)를
 Docker Compose로 동시에 구동하는 방법.
 
 ---
@@ -11,10 +11,11 @@ Docker Compose로 동시에 구동하는 방법.
 |------|------|
 | [`compose.dev.yaml`](./compose.dev.yaml) | 개발 — CPU 모드, 인증 우회, 포트 노출 |
 | [`compose.prod.yaml`](./compose.prod.yaml) | 운영 — GPU + Traefik TLS + 백업 사이드카 |
+| [`compose.infra.yaml`](./compose.infra.yaml) | 인프라 전용 — 호스트 직접 실행 시 (Apple Silicon MPS 등) |
 | [`.env.example`](./.env.example) | 환경 변수 템플릿 (SUPERVISOR 계정, DB/Redis/MinIO/NextAuth 비번) |
-| [`../../ml-worker/Dockerfile`](../../ml-worker/Dockerfile) | 워커 CPU 이미지 (Python 3.12-slim) |
-| [`../../ml-worker/Dockerfile.gpu`](../../ml-worker/Dockerfile.gpu) | 워커 GPU 이미지 (CUDA 12.1) |
-| [`../../ml-frontend/Dockerfile`](../../ml-frontend/Dockerfile) | 프론트엔드 (Node 20 + Next.js standalone) |
+| [`../../Finetuning-Pipeline-worker/Dockerfile`](../../Finetuning-Pipeline-worker/Dockerfile) | 워커 CPU 이미지 (Python 3.12-slim) |
+| [`../../Finetuning-Pipeline-worker/Dockerfile.gpu`](../../Finetuning-Pipeline-worker/Dockerfile.gpu) | 워커 GPU 이미지 (CUDA 12.1) |
+| [`../../Finetuning-Pipeline-frontend/Dockerfile`](../../Finetuning-Pipeline-frontend/Dockerfile) | 프론트엔드 (Node 20 + Next.js standalone) |
 
 ---
 
@@ -47,7 +48,7 @@ docker compose -f compose.dev.yaml up -d --build
 | 서비스 | URL | 비고 |
 |--------|-----|------|
 | 웹 UI | http://localhost:3000 | Next.js 14 |
-| ml-worker API | http://localhost:8000 | Swagger: `/docs` |
+| worker API | http://localhost:8000 | Swagger: `/docs` |
 | MinIO 콘솔 | http://localhost:9101 | `wfp-minio` / `wfp-minio-secret` (외부 9101, 컨테이너 9001) |
 | MinIO S3 API | http://localhost:9100 | 컨테이너 내부는 `minio:9000` |
 | MailHog UI | http://localhost:8125 | 회원가입 이메일 트랩 (외부 8125, 컨테이너 8025) |
@@ -125,14 +126,14 @@ curl -I https://wfp.example.com
 ### 단일 이미지 빌드 (compose 없이)
 
 ```bash
-# ml-worker (CPU)
-docker build -t wfp-worker:latest ml-worker/
+# Finetuning-Pipeline-worker (CPU)
+docker build -t wfp-worker:latest ../../Finetuning-Pipeline-worker/
 
-# ml-worker (GPU)
-docker build -f ml-worker/Dockerfile.gpu -t wfp-worker:gpu ml-worker/
+# Finetuning-Pipeline-worker (GPU)
+docker build -f ../../Finetuning-Pipeline-worker/Dockerfile.gpu -t wfp-worker:gpu ../../Finetuning-Pipeline-worker/
 
-# ml-frontend
-docker build -t wfp-frontend:latest ml-frontend/
+# Finetuning-Pipeline-frontend
+docker build -t wfp-frontend:latest ../../Finetuning-Pipeline-frontend/
 ```
 
 ### 캐시 마운트로 빠른 재빌드
@@ -140,7 +141,7 @@ docker build -t wfp-frontend:latest ml-frontend/
 ```bash
 DOCKER_BUILDKIT=1 docker build \
   --cache-from wfp-worker:latest \
-  -t wfp-worker:latest ml-worker/
+  -t wfp-worker:latest ../../Finetuning-Pipeline-worker/
 ```
 
 ### 멀티 아키텍처 (ARM64 + x86_64)
@@ -148,7 +149,7 @@ DOCKER_BUILDKIT=1 docker build \
 ```bash
 docker buildx create --use --name wfp-builder
 docker buildx build --platform linux/amd64,linux/arm64 \
-  -t wfp-worker:latest --push ml-worker/
+  -t wfp-worker:latest --push ../../Finetuning-Pipeline-worker/
 ```
 
 ---
@@ -221,8 +222,8 @@ GitHub Actions 예시 (`.github/workflows/build.yml` — 향후 추가 예정):
 - name: Build & push worker
   uses: docker/build-push-action@v6
   with:
-    context: ./ml-worker
-    file: ./ml-worker/Dockerfile
+    context: .
+    file: ./Dockerfile
     push: true
     tags: ghcr.io/${{ github.repository }}/worker:${{ github.sha }}
     cache-from: type=gha

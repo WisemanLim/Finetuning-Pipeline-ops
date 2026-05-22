@@ -46,7 +46,7 @@ services:
   # ---------------------------------------------------------------------------
   worker:
     build:
-      context: ../../../DA(Python,R,...)/Finetuning-Pipeline-worker
+      context: ${WFP_WORKER_DIR:-../../Finetuning-Pipeline-worker}
       dockerfile: Dockerfile.gpu
     image: wfp-worker:prod
     pull_policy: build
