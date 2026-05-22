@@ -7,6 +7,7 @@ SHELL := /bin/bash
 .PHONY: help bootstrap dev test lint build clean \
         docker-dev docker-dev-cpu docker-dev-gpu \
         docker-prod docker-prod-cpu docker-prod-gpu \
+        docker-prod-tls docker-prod-tls-gpu \
         docker-down docker-logs
 
 # -----------------------------------------------------------------------------
@@ -136,6 +137,12 @@ docker-prod-cpu: ## 운영 스택 기동 (CPU 강제)
 
 docker-prod-gpu: ## 운영 스택 기동 (GPU 강제 — nvidia 런타임 필요)
 	cd docker && $(DC_ENV) docker compose -f compose.prod.yaml -f compose.prod.gpu.yaml up -d --build
+
+docker-prod-tls: ## 운영 스택 기동 + TLS (DOMAIN/ACME_EMAIL 필요)
+	cd docker && $(DC_ENV) docker compose -f compose.prod.yaml -f compose.prod.tls.yaml up -d --build
+
+docker-prod-tls-gpu: ## 운영 스택 기동 + TLS + GPU
+	cd docker && $(DC_ENV) docker compose -f compose.prod.yaml -f compose.prod.gpu.yaml -f compose.prod.tls.yaml up -d --build
 
 docker-down: ## 컨테이너 정지 (볼륨 유지) — dev/prod 모두 정지
 	cd docker && $(DC_ENV) docker compose $(DEV_FILES) down 2>/dev/null || true

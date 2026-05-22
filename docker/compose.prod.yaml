@@ -1,23 +1,25 @@
 # =============================================================================
-# WFP 운영 환경 — Docker Compose
+# WFP 운영 환경 — Docker Compose (HTTP, IP-기반 접속 가능)
 #
-# compose.dev.yaml과 차이점:
-#   - Traefik reverse proxy 추가 (TLS + 자동 인증서)
-#   - 포트 외부 노출 최소화 (web/worker는 내부 네트워크만)
-#   - 비밀번호 환경 변수 강제 (기본값 제거)
-#   - 백업 사이드카 (postgres dump → minio)
-#   - worker는 Dockerfile.gpu로 빌드 (NVIDIA 런타임)
+# 기본 동작:
+#   - HTTP(80)만 노출 → IP 접속 즉시 가능 (도메인 불필요)
+#   - 라우팅: PathPrefix 기반 catch-all (Host 헤더 무관)
+#   - 비밀번호 환경 변수 강제
+#   - 백업 사이드카 (postgres → minio)
 #
-# 실행:
-#   cp .env.example .env  # 필수 값 모두 채울 것
-#   docker compose -f compose.prod.yaml up -d
+# TLS + 도메인 라우팅 추가: compose.prod.tls.yaml 오버라이드 사용
+#   make docker-prod-tls   또는
+#   docker compose -f compose.prod.yaml -f compose.prod.tls.yaml up -d
+#
+# GPU 추가: compose.prod.gpu.yaml 오버라이드
+#   make docker-prod-gpu
 # =============================================================================
 
 name: wfp-prod
 
 services:
   # ---------------------------------------------------------------------------
-  # Traefik — TLS termination + 자동 인증서 (Let's Encrypt)
+  # Traefik — HTTP 라우터 (TLS는 compose.prod.tls.yaml에서 추가)
   # ---------------------------------------------------------------------------
   traefik:
     image: traefik:v3.1
@@ -26,15 +28,8 @@ services:
       - "--providers.docker=true"
       - "--providers.docker.exposedbydefault=false"
       - "--entrypoints.web.address=:80"
-      - "--entrypoints.websecure.address=:443"
-      - "--entrypoints.web.http.redirections.entrypoint.to=websecure"
-      - "--entrypoints.web.http.redirections.entrypoint.scheme=https"
-      - "--certificatesresolvers.le.acme.email=${ACME_EMAIL}"
-      - "--certificatesresolvers.le.acme.storage=/letsencrypt/acme.json"
-      - "--certificatesresolvers.le.acme.tlschallenge=true"
     ports:
       - "80:80"
-      - "443:443"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
       - traefik_certs:/letsencrypt
@@ -73,9 +68,11 @@ services:
     restart: always
     labels:
       - "traefik.enable=true"
-      - "traefik.http.routers.worker.rule=Host(`api.${DOMAIN}`)"
-      - "traefik.http.routers.worker.entrypoints=websecure"
-      - "traefik.http.routers.worker.tls.certresolver=le"
+      # WebSocket 진행 스트림은 외부 노출 필요 (프론트엔드가 브라우저에서 직접 연결)
+      - "traefik.http.routers.worker-ws.rule=PathPrefix(`/ws`)"
+      - "traefik.http.routers.worker-ws.entrypoints=web"
+      - "traefik.http.routers.worker-ws.priority=20"
+      - "traefik.http.routers.worker-ws.service=worker"
       - "traefik.http.services.worker.loadbalancer.server.port=8000"
 
   # ---------------------------------------------------------------------------
@@ -91,7 +88,7 @@ services:
       NODE_ENV: production
       WFP_WORKER_URL: http://worker:8000
       NEXTAUTH_SECRET: ${NEXTAUTH_SECRET:?required}
-      NEXTAUTH_URL: https://${DOMAIN}
+      NEXTAUTH_URL: ${NEXTAUTH_URL:-http://localhost}
       GRADIO_BASE_URL: ${GRADIO_BASE_URL:-}
     depends_on:
       - worker
@@ -99,9 +96,10 @@ services:
     restart: always
     labels:
       - "traefik.enable=true"
-      - "traefik.http.routers.web.rule=Host(`${DOMAIN}`)"
-      - "traefik.http.routers.web.entrypoints=websecure"
-      - "traefik.http.routers.web.tls.certresolver=le"
+      # 모든 path catch-all (낮은 priority — /ws 같은 specific path는 worker로 라우팅)
+      - "traefik.http.routers.web.rule=PathPrefix(`/`)"
+      - "traefik.http.routers.web.entrypoints=web"
+      - "traefik.http.routers.web.priority=1"
       - "traefik.http.services.web.loadbalancer.server.port=3000"
 
   # ---------------------------------------------------------------------------

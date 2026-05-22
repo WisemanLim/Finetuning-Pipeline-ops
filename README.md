@@ -212,15 +212,21 @@ JWT Bearer 토큰 인증 (signup/login으로 발급). `🔒` = 인증 필요, `�
 | `DELETE` | `/jobs/{id}` | 잡 취소 | 🔒 |
 | `GET` | `/jobs/{id}/artifacts/{kind}` | 아티팩트 파일 다운로드 | 🔒 |
 | `WS` | `/ws/{id}` | 실시간 진행 스트림 | |
+| `GET` | `/admin/stats` | 대시보드 카드 (사용자/잡/타이밍/GPU) — PRD §10.1 | 👑 |
+| `GET` | `/admin/resources` | GPU/큐/디스크 현황 | 👑 |
 | `GET` | `/admin/users` | 사용자 목록 | 👑 |
 | `PATCH` | `/admin/users/{id}` | 권한/활성 토글 | 👑 |
-| `GET` | `/admin/jobs` | 전체 잡 | 👑 |
-| `GET` | `/admin/resources` | GPU/큐/디스크 | 👑 |
-| `GET` | `/admin/catalog/models` | 카탈로그 전체 | 👑 |
-| `POST` | `/admin/catalog/models` | 카탈로그 추가 | 👑 |
-| `PATCH` | `/admin/catalog/models/{id}` | 카탈로그 수정 | 👑 |
-| `DELETE` | `/admin/catalog/models/{id}` | 카탈로그 비활성 | 👑 |
-| `GET` | `/admin/audit` | 감사 로그 | 👑 |
+| `GET` | `/admin/jobs` | 전체 잡 (필터: state/user_id/ksic_section/date_from/date_to) | 👑 |
+| `GET` | `/admin/jobs/{id}` | 잡 상세 + 이벤트 로그 — PRD §10.2 | 👑 |
+| `POST` | `/admin/jobs/{id}/cancel` | 강제 취소 — PRD §10.2 | 👑 |
+| `PATCH` | `/admin/jobs/{id}/priority` | 우선순위 변경 (1~9) — PRD §10.2 | 👑 |
+| `POST` | `/admin/reaper/run` | Reaper 수동 트리거 — PRD §10.3 | 👑 |
+| `GET/POST/PATCH/DELETE` | `/admin/catalog/models[/{id}]` | 모델 카탈로그 CRUD — PRD §10.4 | 👑 |
+| `GET/POST/PATCH/DELETE` | `/admin/data-sources[/{id}]` | 데이터 소스 화이트리스트 CRUD — PRD §10.4 | 👑 |
+| `GET/POST/PATCH/DELETE` | `/admin/presets[/{id}]` | 카테고리/프리셋 CRUD — PRD §10.4 | 👑 |
+| `GET` | `/admin/audit` | 감사 로그 (필터: actor_email/action/date) — PRD §10.5 | 👑 |
+| `GET` | `/admin/env/status` | 호스트 환경 진단 (Python/CUDA/MPS/패키지) | 👑 |
+| `POST` | `/admin/env/install` | 학습 패키지 자동 설치 | 👑 |
 
 ### Finetuning-Pipeline-frontend 라우팅 그룹
 

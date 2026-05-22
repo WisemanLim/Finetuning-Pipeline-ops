@@ -11,8 +11,9 @@ Docker Compose로 동시에 구동하는 방법.
 |------|------|
 | [`compose.dev.yaml`](./compose.dev.yaml) | 개발 베이스 — CPU 모드, 인증 우회, 포트 노출 |
 | [`compose.dev.gpu.yaml`](./compose.dev.gpu.yaml) | 개발 GPU 오버라이드 — worker만 GPU 빌드 + nvidia 디바이스 |
-| [`compose.prod.yaml`](./compose.prod.yaml) | 운영 베이스 — CPU + Traefik TLS + 백업 사이드카 |
+| [`compose.prod.yaml`](./compose.prod.yaml) | 운영 베이스 — HTTP (Traefik, **IP 접속 가능**), CPU, 백업 사이드카 |
 | [`compose.prod.gpu.yaml`](./compose.prod.gpu.yaml) | 운영 GPU 오버라이드 |
+| [`compose.prod.tls.yaml`](./compose.prod.tls.yaml) | 운영 TLS 오버라이드 (실제 도메인 + Let's Encrypt) |
 | [`compose.infra.yaml`](./compose.infra.yaml) | 인프라 전용 — 호스트 직접 실행 시 (Apple Silicon MPS 등) |
 | [`.env.example`](./.env.example) | 환경 변수 템플릿 (SUPERVISOR/DB/Redis/MinIO/NextAuth 비번 + `WFP_WORKER_DIR`) |
 | [`../../Finetuning-Pipeline-worker/Dockerfile`](../../Finetuning-Pipeline-worker/Dockerfile) | 워커 CPU 이미지 — multi-stage `python:3.12-slim` |
@@ -133,33 +134,55 @@ docker run --rm --gpus all nvidia/cuda:12.1.1-base-ubuntu22.04 nvidia-smi
 
 ### 기동
 
+#### A. IP 기반 (도메인 없음, HTTP만)
+
+가장 간단한 배포 형태. 서버 IP로 바로 접속 가능. `.env`에 도메인/ACME 설정 불필요.
+
 ```bash
 cd Finetuning-Pipeline-ops/docker
 cp .env.example .env
-# .env 모든 값 채우기 (특히 POSTGRES_PASSWORD, REDIS_PASSWORD, NEXTAUTH_SECRET, DOMAIN, ACME_EMAIL)
+# 필수: POSTGRES_PASSWORD, REDIS_PASSWORD, NEXTAUTH_SECRET, MINIO_ROOT_*, HF_TOKEN, SUPERVISOR_*
+# NEXTAUTH_URL=http://<서버-IP>  ← 외부 IP일 경우 localhost → 실제 IP로 변경
 cd ..
 
 make docker-prod           # GPU 자동 감지 — 권장
 # 또는 강제:
-make docker-prod-cpu       # CPU 강제
-make docker-prod-gpu       # GPU 강제
+make docker-prod-cpu
+make docker-prod-gpu
+```
 
-# 로그 확인
+접속: `http://<서버-IP>/`
+
+Traefik이 80 포트에서 받아 web/worker로 PathPrefix 기반 라우팅 (`/ws` → worker, 나머지 → web).
+
+#### B. 도메인 + TLS (Let's Encrypt 자동 인증서)
+
+실제 도메인 보유, DNS A 레코드 설정, 80/443 외부 개방, ACME_EMAIL 설정 완료 시.
+
+```bash
+# .env에 추가
+# DOMAIN=wfp.example.com
+# ACME_EMAIL=admin@example.com
+# NEXTAUTH_URL=https://wfp.example.com
+
+make docker-prod-tls       # CPU + TLS
+make docker-prod-tls-gpu   # GPU + TLS
+```
+
+`compose.prod.tls.yaml` 오버라이드가:
+- HTTPS(443) 엔트리포인트 추가
+- HTTP → HTTPS 강제 리다이렉트
+- Host 헤더 기반 라우팅 (catch-all 제거)
+- Let's Encrypt TLS challenge
+
+접속: `https://<도메인>/`
+
+#### 로그 확인
+
+```bash
 make docker-logs
 docker compose -f docker/compose.prod.yaml logs -f traefik
 ```
-
-수동 (Makefile 없이):
-
-```bash
-cd Finetuning-Pipeline-ops/docker
-# CPU
-docker compose -f compose.prod.yaml up -d --build
-# GPU
-docker compose -f compose.prod.yaml -f compose.prod.gpu.yaml up -d --build
-```
-
-Traefik이 Let's Encrypt에서 인증서를 자동 발급한다 (`ACME_EMAIL` 필수).
 
 ### TLS 인증서 발급 확인
 
