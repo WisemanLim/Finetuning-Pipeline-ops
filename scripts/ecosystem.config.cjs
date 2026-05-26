@@ -14,19 +14,33 @@
  *   pm2 delete all
  */
 
+const path = require("path");
+
 const workerDir = process.env.WORKER_DIR;
 const frontendDir = process.env.FRONTEND_DIR;
 const logDir = process.env.HOST_LOG_DIR || "./.host-logs";
+// ops/docker/.env — Makefile env-check가 검증한 SUPERVISOR_ID/PASSWORD 등 위치
+const opsDockerEnv = path.join(__dirname, "..", "docker", ".env");
 
 if (!workerDir || !frontendDir) {
-  // PM2가 config 로드 시 stderr로 출력
   console.error("WORKER_DIR / FRONTEND_DIR 환경 변수 미설정");
 }
 
-// worker: bash로 .env 자동 로드 후 uvicorn 실행
+// worker: docker/.env (운영 비밀) + WORKER_DIR/.env (로컬 override) 순으로 로드
 const workerScript = (uvicornArgs) =>
-  `set -a; [ -f .env ] && source .env; set +a; ` +
+  `set -a; ` +
+  `[ -f "${opsDockerEnv}" ] && source "${opsDockerEnv}"; ` +
+  `[ -f .env ] && source .env; ` +
+  `set +a; ` +
   `exec .venv/bin/uvicorn wfp_worker.server:app --host 0.0.0.0 --port 8000 ${uvicornArgs}`;
+
+// web: docker/.env (NEXTAUTH_*, NEXT_PUBLIC_*) + FRONTEND_DIR/.env.local 순
+const webScript = (cmd) =>
+  `set -a; ` +
+  `[ -f "${opsDockerEnv}" ] && source "${opsDockerEnv}"; ` +
+  `[ -f .env.local ] && source .env.local; ` +
+  `set +a; ` +
+  `exec ${cmd}`;
 
 module.exports = {
   apps: [
@@ -67,7 +81,7 @@ module.exports = {
       name: "wfp-web-dev",
       cwd: frontendDir,
       script: "/bin/bash",
-      args: ["-c", "exec pnpm dev"],
+      args: ["-c", webScript("pnpm dev")],
       autorestart: true,
       max_restarts: 10,
       min_uptime: "10s",
@@ -80,7 +94,7 @@ module.exports = {
       name: "wfp-web-prod",
       cwd: frontendDir,
       script: "/bin/bash",
-      args: ["-c", "exec pnpm start"],
+      args: ["-c", webScript("pnpm start")],
       autorestart: true,
       max_restarts: 10,
       min_uptime: "30s",
