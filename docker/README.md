@@ -131,7 +131,7 @@ make host-down              # pm2 delete all + pm2 kill (daemon) + 포트 8000/3
 |---|---|---|
 | `dev-worker` | `uvicorn ... --reload` | 핫리로드 |
 | `dev-web` | `pnpm dev` | HMR |
-| `prod-worker` | `uvicorn ... --workers 2` | 멀티 워커 |
+| `prod-worker` | `uvicorn ... --workers 1` | 단일 worker (in-memory _jobs 일관성) |
 | `prod-web` | `pnpm build && pnpm start` | 프로덕션 (수동) |
 
 **PM2 ecosystem** (`scripts/ecosystem.config.cjs`):
@@ -139,7 +139,7 @@ make host-down              # pm2 delete all + pm2 kill (daemon) + 포트 8000/3
 | 앱 이름 | cwd | 명령 | 옵션 |
 |---|---|---|---|
 | `wfp-worker-dev` | `$WORKER_DIR` | `bash -c '.env 로드 + uvicorn --reload'` | autorestart, max_restarts=10 |
-| `wfp-worker-prod` | `$WORKER_DIR` | `bash -c '.env 로드 + uvicorn --workers 2'` | autorestart, min_uptime=30s |
+| `wfp-worker-prod` | `$WORKER_DIR` | `bash -c '.env 로드 + uvicorn --workers 1'` | autorestart, min_uptime=30s |
 | `wfp-web-dev` | `$FRONTEND_DIR` | `bash -c 'pnpm dev'` | autorestart |
 | `wfp-web-prod` | `$FRONTEND_DIR` | `bash -c 'pnpm start'` (빌드는 Makefile 사전 실행) | autorestart |
 
@@ -359,6 +359,8 @@ docker compose -f compose.dev.yaml down -v
 
 ## 6. 문제 해결
 
+### Docker 컨테이너 모드
+
 | 증상 | 원인 | 해결 |
 |------|------|------|
 | `worker` 컨테이너 OOM 종료 | RAM 부족 | Docker Desktop 메모리 16GB+ 할당 |
@@ -367,6 +369,30 @@ docker compose -f compose.dev.yaml down -v
 | `worker` GPU 미인식 | NVIDIA Container Toolkit 미설치 | `docker run --rm --gpus all nvidia/cuda:12.1.1-base nvidia-smi`로 검증 |
 | MinIO 콘솔 접속 안 됨 | 9001 포트 충돌 | `compose.dev.yaml`에서 포트 변경 |
 | 빌드가 항상 처음부터 실행 | `.dockerignore` 미적용 | 빌드 컨텍스트에 큰 파일 포함 여부 확인 |
+| Mailpit `exec format error` | 옛 mailhog 멀티아키 깨짐 | `docker rmi mailhog/mailhog:latest` 후 git pull (mailpit으로 교체됨) |
+
+### via-host (PM2) 모드
+
+| 증상 | 원인 | 해결 |
+|------|------|------|
+| `make host-down` 도중 `Terminated` | (구) pkill 패턴이 부모 bash argv 매칭 | `scripts/host-down.sh` 별도 파일 사용 — git pull로 적용 |
+| 잡 목록 flicker (나타났다 사라짐) | 옛 `uvicorn --workers 2` — in-memory `_jobs` 프로세스마다 분리 | git pull + restart — 단일 worker로 통일 |
+| Login `InvalidKeyError: HMAC key must not be empty` | `NEXTAUTH_SECRET=` 또는 `JWT_SECRET=` 빈 값 | docker/.env에 `NEXTAUTH_SECRET=$(openssl rand -base64 32)` 설정 + restart |
+| WFP-0203 HW 사양 매칭 안 됨 | YAML 미발견 + 내장 fallback도 매칭 실패 | `WFP_RULES_PATH=/path/to/rules.yaml make docker-prod-via-host` 강제 |
+| 대시보드 "0 GPU" + nvidia-smi 정상 | pynvml 실패 + worker venv 옛 코드 | `uv pip uninstall wfp-worker && uv pip install -e ".[dev]"` 재설치 |
+| `host-deps-check` 통과 후 bootstrap 실패 | uv/pnpm/pm2 일부 누락 (수동 환경) | 자동: `make bootstrap` 재실행 / 수동: 메시지의 명령 실행 |
+| 외부 IP에서 3000/8000 접속 안 됨 | ufw / iptables 차단 (Docker는 우회) | `sudo ufw allow from <LAN>/24 to any port 3000 proto tcp` |
+| Next.js IPv6만 listen (`:::3000`) | (구) `next start -p 3000` (호스트 미지정) | git pull frontend — `-H 0.0.0.0` 명시됨 |
+
+### 진단 명령
+
+```bash
+make traefik-diag       # 라우팅 / 라벨 / 네트워크
+make docker-info        # 경로 + GPU 자동 감지
+make docker-logs        # PM2/compose 자동 감지 후 로그
+make host-status        # PM2 프로세스 상태
+make env-check          # docker/.env 필수 키 검증
+```
 
 ---
 

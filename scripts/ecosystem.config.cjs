@@ -47,7 +47,8 @@ const webScript = (cmd) =>
 module.exports = {
   apps: [
     // -------------------------------------------------------------------------
-    // Worker (FastAPI) — dev: --reload, prod: --workers 2
+    // Worker (FastAPI) — dev: --reload, prod: --workers 1
+    // workers=2 사용 시 in-memory _jobs dict가 프로세스마다 분리 → 잡 목록 flicker.
     // -------------------------------------------------------------------------
     {
       name: "wfp-worker-dev",
@@ -66,7 +67,7 @@ module.exports = {
       name: "wfp-worker-prod",
       cwd: workerDir,
       script: "/bin/bash",
-      args: ["-c", workerScript("--workers 2")],
+      args: ["-c", workerScript("--workers 1")],
       autorestart: true,
       max_restarts: 10,
       min_uptime: "30s",

@@ -193,7 +193,7 @@ make docker-infra   # postgres/redis/minio/mailhog만 기동
 make dev-worker     # 별도 터미널 — uvicorn --reload + MPS 자동 사용
 make dev-web        # 별도 터미널 — pnpm dev (HMR)
 # 운영:
-make prod-worker    # uvicorn workers=2
+make prod-worker    # uvicorn workers=1
 make prod-web       # pnpm build → pnpm start
 ```
 
@@ -479,7 +479,7 @@ make docker-prod-tls-gpu    # TLS + GPU (prod)
 # 호스트 직접 실행 — foreground (Ctrl+C로 정지)
 make dev-worker             # uvicorn --reload (핫리로드, .env 자동 로드)
 make dev-web                # pnpm dev (HMR)
-make prod-worker            # uvicorn workers=2 (.env 자동 로드)
+make prod-worker            # uvicorn workers=1 (.env 자동 로드)
 make prod-web               # pnpm build → pnpm start
 
 # 하이브리드 — 인프라(Docker) + worker/web(호스트 PM2 관리)
@@ -567,6 +567,42 @@ Makefile은 두 가지를 자동 감지한다:
    - macOS / 드라이버 미설치 → 자동 CPU 모드
 
 `make docker-info`로 현재 감지 결과 확인.
+
+### HW 규칙 (`rules/hw_to_plan.yaml`) 자동 탐색
+
+Worker가 시작 시 HW → 학습 플랜 규칙 YAML을 다음 순서로 탐색:
+
+| 우선순위 | 경로 | 용도 |
+|---|---|---|
+| 1 | `$WFP_RULES_PATH` (env override) | 커스텀 위치 강제 |
+| 2 | `/app/ops/rules/hw_to_plan.yaml` | Docker compose volume mount |
+| 3 | `<worker repo>/../Finetuning-Pipeline-ops/rules/hw_to_plan.yaml` | 시블링 repo (서버 표준) |
+| 4 | `<worker repo>/ops/rules/hw_to_plan.yaml` | monorepo (legacy) |
+| 5 | 코드 내장 `_BUILTIN_FALLBACK_RULES` | 안전망 (파일 누락 시) |
+
+내장 규칙은 표준 GPU + Apple + CPU 외 **NVIDIA Unified Memory** (Grace/Blackwell/Jetson, vram=0 보고) 케이스 포함.
+
+### GPU 진단 (`nvidia-smi` fallback)
+
+`stage2_hw_probe`는 `pynvml`을 우선 사용, 실패 시 자동으로 `nvidia-smi` CLI 서브프로세스로 fallback:
+
+- pynvml NVML init "Not Supported" (aarch64 Open Kernel Module 등) → fallback
+- `--query-gpu=...` CSV 파싱 → `index, name, memory.total, temperature, util`
+- unified memory SKU의 `memory.total = Not Supported` 안전 처리 (vram=0)
+
+PM2 환경에서 nvidia-smi PATH 보장 — `ecosystem.config.cjs`가 `/usr/bin`, `/usr/local/cuda/bin` 명시 export.
+
+### 트러블슈팅
+
+| 증상 | 원인 | 해결 |
+|---|---|---|
+| `[WFP-0203] HW 사양에 매칭되는 플랜 규칙 없음` | YAML 미발견 + 내장 규칙도 매칭 실패 | 1) `make host-restart` 후 로그 확인  2) `WFP_RULES_PATH=/path/to/hw_to_plan.yaml make docker-prod-via-host`로 강제 |
+| 대시보드 잡 목록 flicker (나타났다 사라짐 반복) | 옛 `uvicorn --workers 2` 잔존 — in-memory `_jobs` 분리 | `git pull` + `make host-down && make docker-prod-via-host` → `workers 1`로 단일화 |
+| 대시보드 "0 GPU" + nvidia-smi 정상 동작 | pynvml NVML init 실패 + 옛 코드 (fallback 없음) | worker venv 재설치 — `uv pip uninstall wfp-worker` + `uv pip install -e ".[dev]"` |
+| login 시 `InvalidKeyError: HMAC key must not be empty` | `JWT_SECRET=` / `NEXTAUTH_SECRET=` 빈 값 | docker/.env에 `NEXTAUTH_SECRET=$(openssl rand -base64 32)` 설정 + restart |
+| `Mailpit exec format error` | (구) mailhog 멀티아키 푸시 깨짐 | docker-down 후 `docker rmi mailhog/mailhog:latest` → mailpit으로 교체된 최신 compose 사용 |
+| `make host-down` 실행 중 `Terminated` | (구) pkill 패턴이 부모 bash argv 매칭 | `scripts/host-down.sh` 별도 파일 — argv에 패턴 문자열 없음 |
+| `make docker-prod-via-host` 실행 시 dependencies 누락 | uv/pnpm/pm2 미설치 | `host-deps-check`가 자동 `make bootstrap` 호출 — 첫 실행 시 자동 설치 |
 
 ### 향후 작업
 

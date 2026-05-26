@@ -122,14 +122,16 @@ install-deps: ## 호스트 환경 자동 감지 후 학습 패키지 자동 설�
 # -----------------------------------------------------------------------------
 # 로컬 호스트 실행 (Docker 없이) — dev/prod 공통 변수로 단일화
 # -----------------------------------------------------------------------------
-# 워커 uvicorn 옵션 — dev=핫리로드, prod=worker 2개
+# 워커 uvicorn 옵션 — dev=핫리로드, prod=단일 worker
+# NOTE: workers=2 사용 시 in-memory _jobs dict가 프로세스마다 분리 → 잡 목록 flicker.
+#       다중 worker 필요 시 Redis/DB 공유 store로 먼저 마이그레이션.
 WORKER_UVICORN_DEV  := .venv/bin/uvicorn wfp_worker.server:app --host 0.0.0.0 --port 8000 --reload
-WORKER_UVICORN_PROD := .venv/bin/uvicorn wfp_worker.server:app --host 0.0.0.0 --port 8000 --workers 2
+WORKER_UVICORN_PROD := .venv/bin/uvicorn wfp_worker.server:app --host 0.0.0.0 --port 8000 --workers 1
 
 dev-worker: ## Finetuning-Pipeline-worker dev 서버 (uvicorn --reload, .env 자동 로드, foreground)
 	cd '$(WORKER_DIR)' && bash -c 'set -a; [ -f .env ] && source .env; set +a; exec $(WORKER_UVICORN_DEV)'
 
-prod-worker: ## Finetuning-Pipeline-worker prod 서버 (uvicorn workers=2, .env 자동 로드, foreground)
+prod-worker: ## Finetuning-Pipeline-worker prod 서버 (uvicorn workers=1, .env 자동 로드, foreground)
 	cd '$(WORKER_DIR)' && bash -c 'set -a; [ -f .env ] && source .env; set +a; exec $(WORKER_UVICORN_PROD)'
 
 dev-web: ## Finetuning-Pipeline-frontend dev 서버 (pnpm dev, foreground)
@@ -349,8 +351,14 @@ docker-clean: ## 전체 정지 + 볼륨 삭제 (주의 — 데이터 손실)
 	@cd docker && docker compose -f compose.infra.yaml down -v 2>/dev/null || true
 	@echo "✓ 전체 정지 + 볼륨 삭제 완료"
 
-docker-logs: ## 워커 로그 추적
-	cd docker && $(DC_ENV) docker compose $(DEV_FILES) logs -f worker
+docker-logs: ## 워커 로그 추적 — via-host(PM2) 자동 감지, 없으면 compose worker
+	@if pm2 jlist 2>/dev/null | grep -q "wfp-worker"; then \
+	  echo "→ PM2 모드 — pm2 logs (host-logs로 가도 동일)"; \
+	  pm2 logs wfp-worker-dev wfp-worker-prod; \
+	else \
+	  echo "→ 컨테이너 모드 — docker compose logs"; \
+	  cd docker && $(DC_ENV) docker compose $(DEV_FILES) logs -f worker; \
+	fi
 
 docker-ps: ## 컨테이너 상태
 	cd docker && $(DC_ENV) docker compose $(DEV_FILES) ps
