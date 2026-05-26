@@ -110,7 +110,8 @@ bootstrap: ## 전체 의존성 설치 (uv + pnpm@10 + pm2, user-local — sudo �
 	@echo "→ Finetuning-Pipeline-frontend (Node 20 + pnpm)"
 	@cd '$(FRONTEND_DIR)' && "$$HOME/.local/bin/pnpm" install
 	@echo "✓ bootstrap complete"
-	@$(MAKE) env-status
+	@# env-status는 train 패키지 미설치 시 exit 2 — 진단용이라 bootstrap 전체 실패는 안 됨
+	-@$(MAKE) env-status
 
 env-status: ## 호스트 환경 진단 (OS·GPU 자동 감지 + 누락 패키지 표시)
 	cd '$(WORKER_DIR)' && .venv/bin/python -m wfp_worker.env_check

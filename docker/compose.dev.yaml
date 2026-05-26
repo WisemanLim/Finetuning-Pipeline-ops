@@ -171,10 +171,10 @@ services:
     restart: unless-stopped
 
   # ---------------------------------------------------------------------------
-  # MailHog — 회원 이메일 인증 개발 환경 SMTP 트랩
+  # Mailpit — 회원 이메일 인증 개발 환경 SMTP 트랩 (MailHog 대체, 멀티아키)
   # ---------------------------------------------------------------------------
   mailhog:
-    image: mailhog/mailhog:latest
+    image: axllent/mailpit:latest
     container_name: wfp-mailhog
     ports:
       - "1125:1025"    # SMTP (외부 1125)

@@ -69,12 +69,13 @@ services:
     restart: unless-stopped
 
   mailhog:
-    image: mailhog/mailhog:latest
-    platform: linux/amd64
+    # mailhog/mailhog:latest는 더 이상 유지보수 안 됨 + 멀티아키 푸시 깨짐 (exec format error).
+    # mailpit가 drop-in 호환 — SMTP 1025, Web UI 8025, 멀티아키 정상.
+    image: axllent/mailpit:latest
     container_name: wfp-mailhog
     ports:
-      - "1125:1025"
-      - "8125:8025"
+      - "1125:1025"   # SMTP
+      - "8125:8025"   # Web UI
     networks: [wfp]
     restart: unless-stopped
 
