@@ -55,21 +55,33 @@ help: ## 명령 목록
 # Setup
 # -----------------------------------------------------------------------------
 bootstrap: ## 전체 의존성 설치 (uv + pnpm + pm2 자동 설치)
+	@# Node/npm 존재 확인 (pnpm/pm2 설치에 필요)
+	@if ! command -v npm >/dev/null 2>&1; then \
+	  echo "✗ npm 미설치 — Node.js 20 LTS 설치 필요"; \
+	  echo "  Ubuntu/Debian: curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash - && sudo apt-get install -y nodejs"; \
+	  echo "  macOS:         brew install node@20"; \
+	  exit 1; \
+	fi
 	@# uv 자동 설치 (~/.local/bin/uv)
 	@if ! command -v uv >/dev/null 2>&1 && [ ! -x "$$HOME/.local/bin/uv" ]; then \
 	  echo "→ uv 자동 설치 (https://astral.sh/uv)"; \
 	  curl -LsSf https://astral.sh/uv/install.sh | sh; \
 	fi
-	@# pnpm corepack 활성화
+	@# pnpm 설치 — corepack 우선, 실패 시 npm fallback
 	@if ! command -v pnpm >/dev/null 2>&1; then \
-	  echo "→ pnpm 활성화 (corepack)"; \
-	  corepack enable && corepack prepare pnpm@11 --activate || \
-	    { echo "✗ corepack 실패 — npm i -g pnpm@11 직접 실행 필요"; exit 1; }; \
+	  if command -v corepack >/dev/null 2>&1; then \
+	    echo "→ pnpm 활성화 (corepack)"; \
+	    corepack enable && corepack prepare pnpm@11 --activate || \
+	      { echo "→ corepack 실패 → npm fallback"; npm i -g pnpm@11; }; \
+	  else \
+	    echo "→ pnpm 설치 (npm — corepack 미설치)"; \
+	    npm i -g pnpm@11 || { echo "✗ pnpm 설치 실패 — sudo npm i -g pnpm@11 시도"; exit 1; }; \
+	  fi; \
 	fi
 	@# pm2 자동 설치 (process manager — nohup 대체)
 	@if ! command -v pm2 >/dev/null 2>&1; then \
 	  echo "→ pm2 자동 설치 (npm i -g pm2)"; \
-	  npm i -g pm2 || { echo "✗ pm2 설치 실패 — 수동: npm i -g pm2"; exit 1; }; \
+	  npm i -g pm2 || { echo "✗ pm2 설치 실패 — sudo npm i -g pm2 시도"; exit 1; }; \
 	fi
 	@echo "→ Finetuning-Pipeline-worker (Python 3.12 + uv)"
 	@UV=$$(command -v uv 2>/dev/null || echo $$HOME/.local/bin/uv); \
@@ -207,23 +219,31 @@ HOST_LOG_DIR := $(MAKEFILE_DIR)/.host-logs
 PM2_ECO      := $(MAKEFILE_DIR)/scripts/ecosystem.config.cjs
 PM2_ENV      := WORKER_DIR='$(WORKER_DIR)' FRONTEND_DIR='$(FRONTEND_DIR)' HOST_LOG_DIR='$(HOST_LOG_DIR)'
 
-# 사전 검증 — 모든 필수 바이너리 (uv는 bootstrap 책임, 여기는 런타임만)
+# 사전 검증 — 누락 감지 시 bootstrap 자동 호출 (idempotent)
 host-deps-check:
+	@need_bootstrap=0; \
+	[ ! -x '$(WORKER_DIR)/.venv/bin/uvicorn' ] && need_bootstrap=1; \
+	command -v pnpm >/dev/null 2>&1 || need_bootstrap=1; \
+	command -v pm2 >/dev/null 2>&1 || need_bootstrap=1; \
+	if [ $$need_bootstrap -eq 1 ]; then \
+	  echo "⚠  의존성 누락 감지 → make bootstrap 자동 실행"; \
+	  $(MAKE) -s -C '$(MAKEFILE_DIR)' bootstrap || { \
+	    echo ""; \
+	    echo "✗ bootstrap 실패. 수동 확인 필요:"; \
+	    echo "  - uv:   ~/.local/bin/uv 또는 PATH에 uv (curl -LsSf https://astral.sh/uv/install.sh | sh)"; \
+	    echo "  - pnpm: corepack enable && corepack prepare pnpm@11 --activate"; \
+	    echo "  - pm2:  npm i -g pm2"; \
+	    exit 1; \
+	  }; \
+	fi
+	@# 재검증 (bootstrap 후에도 누락이면 명시적 실패)
 	@if [ ! -x '$(WORKER_DIR)/.venv/bin/uvicorn' ]; then \
-	  echo "✗ $(WORKER_DIR)/.venv/bin/uvicorn 미설치"; \
-	  echo "  해결: make bootstrap   (uv + venv + 의존성 자동 설치)"; \
+	  echo "✗ bootstrap 후에도 $(WORKER_DIR)/.venv/bin/uvicorn 없음"; \
+	  echo "  uv 설치 후 새 셸 열거나 'source ~/.bashrc'/'source ~/.zshrc' 후 재시도"; \
 	  exit 1; \
 	fi
-	@if ! command -v pnpm >/dev/null 2>&1; then \
-	  echo "✗ pnpm 미설치 (PATH=$$PATH)"; \
-	  echo "  해결: make bootstrap   (corepack 활성화)"; \
-	  exit 1; \
-	fi
-	@if ! command -v pm2 >/dev/null 2>&1; then \
-	  echo "✗ pm2 미설치"; \
-	  echo "  해결: make bootstrap   또는   npm i -g pm2"; \
-	  exit 1; \
-	fi
+	@command -v pnpm >/dev/null 2>&1 || { echo "✗ bootstrap 후에도 pnpm 없음"; exit 1; }
+	@command -v pm2 >/dev/null 2>&1 || { echo "✗ bootstrap 후에도 pm2 없음"; exit 1; }
 	@if [ ! -d '$(FRONTEND_DIR)/node_modules' ]; then \
 	  echo "⚠  $(FRONTEND_DIR)/node_modules 없음 — pnpm install 자동 실행"; \
 	  cd '$(FRONTEND_DIR)' && (pnpm install --frozen-lockfile || pnpm install); \
