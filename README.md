@@ -52,8 +52,9 @@ Web(Node,Script)/
     ├── docker/
     │   ├── compose.dev.yaml      # 개발 베이스 — CPU + 인증 우회
     │   ├── compose.dev.gpu.yaml  # 개발 GPU 오버라이드 (nvidia 런타임)
-    │   ├── compose.prod.yaml     # 운영 베이스 — CPU + Traefik TLS + 백업
+    │   ├── compose.prod.yaml     # 운영 베이스 — HTTP/IP 접속 + Traefik + 백업
     │   ├── compose.prod.gpu.yaml # 운영 GPU 오버라이드 (nvidia 런타임)
+    │   ├── compose.prod.tls.yaml # 운영 TLS 오버라이드 (도메인 + Let's Encrypt)
     │   ├── compose.infra.yaml    # 인프라 전용 (호스트 직접 실행용 — Apple MPS 등)
     │   ├── .env.example
     │   └── README.md             # Docker 통합 가이드
@@ -160,9 +161,24 @@ docker compose -f compose.dev.yaml -f compose.dev.gpu.yaml up -d --build
 | http://localhost:9101 | MinIO 콘솔 (`wfp-minio` / `wfp-minio-secret`) |
 | http://localhost:8125 | MailHog (이메일 트랩) |
 
-#### Apple Silicon (MPS) — 호스트 직접 실행
+#### 하이브리드 모드 — 인프라(Docker) + worker/web(호스트)
 
-Docker for Mac은 Linux VM에서 동작 → MPS 미접근. macOS에서 GPU를 활용하려면 인프라만 컨테이너로 실행하고 워커/웹은 호스트에서 직접 기동:
+Docker for Mac은 Linux VM 안에서 동작 → MPS 미접근. 호스트의 Apple Silicon GPU/MPS, 빠른 핫리로드, 직접 디버깅을 활용하려면 인프라만 컨테이너로 두고 worker/web을 호스트에서 직접 실행.
+
+**원커맨드** (백그라운드 + PID 추적):
+
+```bash
+make docker-dev-via-host   # 인프라 → 호스트 worker(uvicorn --reload) + web(pnpm dev)
+make docker-prod-via-host  # 인프라 → 호스트 worker(workers=2) + web(pnpm build/start)
+
+make host-status           # 프로세스 상태
+make host-logs             # worker + web 로그 동시 tail
+make host-down             # 호스트 프로세스 정지
+```
+
+PID/로그는 `.host-pids/`, `.host-logs/`에 저장 (gitignore 적용).
+
+**수동** (foreground, 별도 터미널 권장):
 
 ```bash
 make docker-infra   # postgres/redis/minio/mailhog만 기동
@@ -384,21 +400,48 @@ make docker-dev-gpu      # GPU 강제 (nvidia 런타임 필요)
 
 ### Docker Compose (운영)
 
+기본 운영 배포는 **HTTP/IP 기반**. 도메인 + TLS는 별도 오버라이드.
+
 ```bash
-cd docker
-cp .env.example .env   # 모든 비번/도메인 채우기 (POSTGRES_PASSWORD, NEXTAUTH_SECRET 등)
-cd ..
-make docker-prod         # GPU 자동 감지 — 권장
-# 또는:
-make docker-prod-cpu     # CPU 강제
-make docker-prod-gpu     # GPU 강제
+# 첫 실행 — .env 없으면 자동 복사 + 중단 (값 채우라 안내)
+make docker-prod
+# → docker/.env.example 복사됨. 아래 8개 키를 강한 랜덤으로 채울 것:
+#   SUPERVISOR_ID, SUPERVISOR_PASSWORD, POSTGRES_PASSWORD, REDIS_PASSWORD,
+#   MINIO_ROOT_USER, MINIO_ROOT_PASSWORD, NEXTAUTH_SECRET, HF_TOKEN
+
+vim docker/.env       # 값 채우기
+
+# 재실행 — env-check 통과 후 빌드
+make docker-prod          # GPU 자동 감지
+make docker-prod-cpu      # CPU 강제
+make docker-prod-gpu      # GPU 강제 (nvidia 런타임 필요)
 ```
 
-운영 추가 사항:
-- **Traefik** reverse proxy + Let's Encrypt 자동 인증서
-- **GPU 워커** (`Dockerfile.gpu` — `python:3.12-slim` 베이스, PyTorch `+cu121` 휠로 CUDA 런타임 번들)
+접속: `http://<서버-IP>/`
+
+#### TLS + 도메인 (선택)
+
+실제 도메인 보유 + DNS A 레코드 + 80/443 외부 개방 + `DOMAIN`/`ACME_EMAIL` env 설정 완료 시.
+
+```bash
+# docker/.env에 추가
+# DOMAIN=wfp.example.com
+# ACME_EMAIL=admin@example.com
+# NEXTAUTH_URL=https://wfp.example.com
+
+make docker-prod-tls        # CPU + TLS
+make docker-prod-tls-gpu    # GPU + TLS
+```
+
+`compose.prod.tls.yaml` 오버라이드가 HTTPS(443) + HTTP→HTTPS 리다이렉트 + Let's Encrypt TLS challenge + Host 헤더 기반 라우팅을 추가.
+
+#### 운영 추가 사항
+
+- **Traefik** reverse proxy (HTTP 기본, TLS 옵션)
+- **GPU 워커** — `Dockerfile.gpu`: `python:3.12-slim` 베이스 + PyTorch `+cu121` 휠로 CUDA 런타임 번들 (nvidia/cuda 베이스 미사용 → 빌드 빠름, 이미지 슬림)
 - **백업 사이드카** — 일 1회 PostgreSQL → MinIO dump
-- 내부 포트만 노출 (web/worker는 외부 비공개)
+- **env-check** — `.env` 누락 또는 필수 키 비어있으면 빌드 전 차단
+- **PathPrefix 라우팅** — `/ws` → worker, 나머지 → web (Host 헤더 무관)
 
 ### Makefile 명령
 
@@ -406,23 +449,35 @@ make docker-prod-gpu     # GPU 강제
 make help                   # 명령 목록
 make bootstrap              # uv + pnpm 의존성 설치
 make docker-info            # 현재 감지된 환경 (경로 + GPU)
+make env-check              # docker/.env 존재 + 필수 키 검증
 make test                   # Finetuning-Pipeline-worker pytest
 make build                  # Docker 이미지 빌드 (worker + web)
 
-# 스택 기동 — GPU 자동 감지
+# 스택 기동 — GPU 자동 감지 (env-check 자동 의존)
 make docker-dev             # 개발 (백그라운드)
-make docker-prod            # 운영
+make docker-prod            # 운영 (HTTP/IP)
+make docker-prod-tls        # 운영 + TLS (DOMAIN/ACME_EMAIL 필요)
 
 # 강제 모드
 make docker-dev-cpu         # CPU 강제 (dev)
 make docker-dev-gpu         # GPU 강제 (dev)
 make docker-prod-cpu        # CPU 강제 (prod)
 make docker-prod-gpu        # GPU 강제 (prod)
+make docker-prod-tls-gpu    # TLS + GPU (prod)
 
-# 인프라만 (Apple Silicon MPS 등 호스트 직접 실행용)
+# 하이브리드 — 인프라(Docker) + worker/web(호스트 background, PID 추적)
+make docker-dev-via-host    # dev 모드 (uvicorn --reload + pnpm dev)
+make docker-prod-via-host   # prod 모드 (uvicorn workers=2 + pnpm build/start)
+make host-status            # 호스트 프로세스 상태
+make host-logs              # worker + web 로그 동시 tail
+make host-logs-worker       # worker 로그만
+make host-logs-web          # web 로그만
+make host-down              # 호스트 프로세스 정지
+
+# 인프라만 (수동 실행 — 별도 터미널에서 dev-worker/dev-web 직접)
 make docker-infra           # postgres/redis/minio/mailhog
-make dev-worker             # 호스트에서 워커 직접 실행
-make dev-web                # 호스트에서 프론트엔드 직접 실행
+make dev-worker             # 호스트에서 워커 직접 실행 (foreground)
+make dev-web                # 호스트에서 프론트엔드 직접 실행 (foreground)
 
 # 관리
 make docker-logs            # 워커 로그 추적

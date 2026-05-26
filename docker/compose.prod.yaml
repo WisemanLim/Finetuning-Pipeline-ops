@@ -27,9 +27,16 @@ services:
     command:
       - "--providers.docker=true"
       - "--providers.docker.exposedbydefault=false"
+      - "--providers.docker.network=${TRAEFIK_DOCKER_NETWORK:-wfp-prod_wfp}"
       - "--entrypoints.web.address=:80"
+      - "--log.level=${TRAEFIK_LOG_LEVEL:-INFO}"
+      - "--accesslog=true"
+      # 디버그용 — TRAEFIK_API=true로 설정 시 :8090(localhost)에서 라우터/서비스 상태 확인
+      - "--api.insecure=${TRAEFIK_API:-false}"
+      - "--api.dashboard=${TRAEFIK_API:-false}"
     ports:
       - "80:80"
+      - "${TRAEFIK_API_PORT:-127.0.0.1:8090}:8080"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
       - traefik_certs:/letsencrypt

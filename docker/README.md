@@ -103,6 +103,42 @@ docker compose -f compose.dev.yaml -f compose.dev.gpu.yaml up -d --build
 docker compose -f compose.dev.yaml logs -f worker
 ```
 
+### 하이브리드 모드 — 인프라(Docker) + worker/web(호스트)
+
+전체 컨테이너 모드는 Docker for Mac의 Linux VM 제약으로 MPS/호스트 GPU에 직접 접근 불가. 인프라만 docker로 두고 worker/web을 호스트에서 직접 실행하면:
+- Apple Silicon MPS, 호스트 NVIDIA GPU 직접 접근
+- 코드 변경 즉시 반영 (uvicorn `--reload` + Next.js HMR)
+- 직접 디버깅 (IDE 디버거, breakpoint)
+
+**원커맨드** (백그라운드 + PID 추적):
+
+```bash
+make docker-dev-via-host    # 인프라 → 호스트 worker(uvicorn --reload) + web(pnpm dev)
+make docker-prod-via-host   # 인프라 → 호스트 worker(workers=2) + web(pnpm build/start)
+
+make host-status            # 프로세스 상태
+make host-logs              # worker + web 로그 동시 tail
+make host-logs-worker       # worker만
+make host-logs-web          # web만
+make host-down              # 호스트 프로세스 정지
+```
+
+내부 동작:
+- `docker-infra` 의존 → postgres/redis/minio/mailhog만 컨테이너로 기동
+- worker: `nohup uvicorn ... &` + PID 저장 (`.host-pids/worker.pid`), 로그 `.host-logs/worker.log`
+- web: `nohup pnpm dev/start &` + PID 저장 (`.host-pids/web.pid`), 로그 `.host-logs/web.log`
+- `host-down`: PID 파일에서 읽어 `kill` + 파일 정리
+
+**수동** (foreground, 별도 터미널 권장):
+
+```bash
+make docker-infra   # postgres/redis/minio/mailhog만 기동
+# 별도 터미널 1: make dev-worker  (호스트 venv에서 uvicorn 실행 — MPS 자동 사용)
+# 별도 터미널 2: make dev-web     (pnpm dev)
+```
+
+`compose.infra.yaml`은 worker/web 서비스 미포함. dev/prod compose의 인프라 서비스만 추출한 형태.
+
 ---
 
 ## 2. 운영 환경
