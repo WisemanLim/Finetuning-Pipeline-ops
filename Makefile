@@ -324,15 +324,32 @@ host-status: ## PM2 프로세스 상태 (테이블 형식)
 host-monit: ## PM2 실시간 모니터 (CPU/메모리/로그)
 	pm2 monit
 
-docker-down: ## 컨테이너 정지 (볼륨 유지) — dev/prod 모두 정지
-	cd docker && $(DC_ENV) docker compose $(DEV_FILES) down 2>/dev/null || true
-	cd docker && $(DC_ENV) docker compose $(PROD_FILES) down 2>/dev/null || true
+docker-down: ## 모든 모드 정지 — PM2 + dev/prod/infra compose (볼륨 유지)
+	@echo "→ PM2 호스트 프로세스 정지"
+	@pm2 delete wfp-worker-dev wfp-worker-prod wfp-web-dev wfp-web-prod 2>/dev/null || true
+	@pm2 save --force >/dev/null 2>&1 || true
+	@echo "→ docker compose dev/prod/infra 정지"
+	@cd docker && $(DC_ENV) docker compose -f compose.dev.yaml -f compose.dev.gpu.yaml down 2>/dev/null || true
+	@cd docker && $(DC_ENV) docker compose -f compose.dev.yaml down 2>/dev/null || true
+	@cd docker && $(DC_ENV) docker compose -f compose.prod.yaml -f compose.prod.gpu.yaml -f compose.prod.tls.yaml down 2>/dev/null || true
+	@cd docker && $(DC_ENV) docker compose -f compose.prod.yaml -f compose.prod.gpu.yaml down 2>/dev/null || true
+	@cd docker && $(DC_ENV) docker compose -f compose.prod.yaml -f compose.prod.tls.yaml down 2>/dev/null || true
+	@cd docker && $(DC_ENV) docker compose -f compose.prod.yaml down 2>/dev/null || true
+	@cd docker && docker compose -f compose.infra.yaml down 2>/dev/null || true
+	@echo "✓ 전체 정지 완료 (볼륨/이미지 보존)"
 
-docker-infra-down: ## 인프라 컨테이너 정지
+docker-infra-down: ## 인프라 컨테이너만 정지
 	cd docker && docker compose -f compose.infra.yaml down
 
-docker-clean: ## 컨테이너 + 볼륨 삭제 (주의 — 데이터 손실)
-	cd docker && $(DC_ENV) docker compose $(DEV_FILES) down -v
+docker-clean: ## 전체 정지 + 볼륨 삭제 (주의 — 데이터 손실)
+	@echo "⚠  볼륨 삭제 진행 — 데이터 손실 발생"
+	@$(MAKE) host-down 2>/dev/null || true
+	@cd docker && $(DC_ENV) docker compose -f compose.dev.yaml -f compose.dev.gpu.yaml down -v 2>/dev/null || true
+	@cd docker && $(DC_ENV) docker compose -f compose.dev.yaml down -v 2>/dev/null || true
+	@cd docker && $(DC_ENV) docker compose -f compose.prod.yaml -f compose.prod.gpu.yaml -f compose.prod.tls.yaml down -v 2>/dev/null || true
+	@cd docker && $(DC_ENV) docker compose -f compose.prod.yaml down -v 2>/dev/null || true
+	@cd docker && docker compose -f compose.infra.yaml down -v 2>/dev/null || true
+	@echo "✓ 전체 정지 + 볼륨 삭제 완료"
 
 docker-logs: ## 워커 로그 추적
 	cd docker && $(DC_ENV) docker compose $(DEV_FILES) logs -f worker
