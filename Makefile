@@ -4,6 +4,9 @@
 # =============================================================================
 
 SHELL := /bin/bash
+
+# ~/.local/bin을 모든 recipe의 PATH에 추가 (uv/pnpm/pm2 user-local 설치 경로)
+export PATH := $(HOME)/.local/bin:$(PATH)
 .PHONY: help bootstrap dev test lint build clean env-check \
         dev-worker dev-web prod-worker prod-web \
         docker-dev docker-dev-cpu docker-dev-gpu \
@@ -54,41 +57,58 @@ help: ## 명령 목록
 # -----------------------------------------------------------------------------
 # Setup
 # -----------------------------------------------------------------------------
-bootstrap: ## 전체 의존성 설치 (uv + pnpm + pm2 자동 설치)
-	@# Node/npm 존재 확인 (pnpm/pm2 설치에 필요)
+bootstrap: ## 전체 의존성 설치 (uv + pnpm@10 + pm2, user-local — sudo 불필요)
+	@# Node/npm 존재 확인 + Node 버전 감지
 	@if ! command -v npm >/dev/null 2>&1; then \
-	  echo "✗ npm 미설치 — Node.js 20 LTS 설치 필요"; \
+	  echo "✗ npm 미설치 — Node.js 20 LTS 이상 설치 필요"; \
 	  echo "  Ubuntu/Debian: curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash - && sudo apt-get install -y nodejs"; \
 	  echo "  macOS:         brew install node@20"; \
 	  exit 1; \
 	fi
-	@# uv 자동 설치 (~/.local/bin/uv)
-	@if ! command -v uv >/dev/null 2>&1 && [ ! -x "$$HOME/.local/bin/uv" ]; then \
-	  echo "→ uv 자동 설치 (https://astral.sh/uv)"; \
+	@node_major=$$(node -v | sed 's/v\([0-9]*\).*/\1/'); \
+	if [ "$$node_major" -lt 18 ]; then \
+	  echo "✗ Node $$node_major 너무 낮음 (≥18 필요)"; exit 1; \
+	fi; \
+	echo "→ Node v$$(node -v | tr -d 'v'), npm $$(npm -v) 감지"
+	@# 사용자 로컬 prefix 디렉토리 (sudo 회피)
+	@mkdir -p "$$HOME/.local/bin"
+	@# uv 설치 → ~/.local/bin/uv
+	@if [ ! -x "$$HOME/.local/bin/uv" ]; then \
+	  echo "→ uv 자동 설치 → ~/.local/bin/uv"; \
 	  curl -LsSf https://astral.sh/uv/install.sh | sh; \
 	fi
-	@# pnpm 설치 — corepack 우선, 실패 시 npm fallback
-	@if ! command -v pnpm >/dev/null 2>&1; then \
-	  if command -v corepack >/dev/null 2>&1; then \
-	    echo "→ pnpm 활성화 (corepack)"; \
-	    corepack enable && corepack prepare pnpm@11 --activate || \
-	      { echo "→ corepack 실패 → npm fallback"; npm i -g pnpm@11; }; \
-	  else \
-	    echo "→ pnpm 설치 (npm — corepack 미설치)"; \
-	    npm i -g pnpm@11 || { echo "✗ pnpm 설치 실패 — sudo npm i -g pnpm@11 시도"; exit 1; }; \
-	  fi; \
+	@# Node 버전에 맞는 pnpm 결정 (>=22.13: v11, 그 이하: v10)
+	@node_major=$$(node -v | sed 's/v\([0-9]*\).*/\1/'); \
+	node_minor=$$(node -v | sed 's/v[0-9]*\.\([0-9]*\).*/\1/'); \
+	if [ "$$node_major" -gt 22 ] || { [ "$$node_major" -eq 22 ] && [ "$$node_minor" -ge 13 ]; }; then \
+	  PNPM_VER=11; \
+	else \
+	  PNPM_VER=10; \
+	fi; \
+	if [ ! -x "$$HOME/.local/bin/pnpm" ]; then \
+	  echo "→ pnpm@$$PNPM_VER 설치 → ~/.local (sudo 불필요)"; \
+	  npm install -g --prefix="$$HOME/.local" pnpm@$$PNPM_VER || \
+	    { echo "✗ pnpm 설치 실패"; exit 1; }; \
 	fi
-	@# pm2 자동 설치 (process manager — nohup 대체)
-	@if ! command -v pm2 >/dev/null 2>&1; then \
-	  echo "→ pm2 자동 설치 (npm i -g pm2)"; \
-	  npm i -g pm2 || { echo "✗ pm2 설치 실패 — sudo npm i -g pm2 시도"; exit 1; }; \
+	@# pm2 → ~/.local
+	@if [ ! -x "$$HOME/.local/bin/pm2" ]; then \
+	  echo "→ pm2 설치 → ~/.local"; \
+	  npm install -g --prefix="$$HOME/.local" pm2 || \
+	    { echo "✗ pm2 설치 실패"; exit 1; }; \
+	fi
+	@# PATH 안내 (Makefile 내부는 PATH 자동 추가, 셸은 사용자가 설정 필요)
+	@if ! echo "$$PATH" | grep -q "$$HOME/.local/bin"; then \
+	  echo ""; \
+	  echo "⚠  ~/.local/bin이 셸 PATH에 없음. 영구 추가 권장:"; \
+	  echo "   echo 'export PATH=\"\$$HOME/.local/bin:\$$PATH\"' >> ~/.bashrc"; \
+	  echo "   source ~/.bashrc"; \
+	  echo ""; \
 	fi
 	@echo "→ Finetuning-Pipeline-worker (Python 3.12 + uv)"
-	@UV=$$(command -v uv 2>/dev/null || echo $$HOME/.local/bin/uv); \
-	cd '$(WORKER_DIR)' && $$UV venv .venv --python 3.12 && \
-	  $$UV pip install -e ".[dev]" --python .venv/bin/python
+	@cd '$(WORKER_DIR)' && "$$HOME/.local/bin/uv" venv .venv --python 3.12 && \
+	  "$$HOME/.local/bin/uv" pip install -e ".[dev]" --python .venv/bin/python
 	@echo "→ Finetuning-Pipeline-frontend (Node 20 + pnpm)"
-	cd '$(FRONTEND_DIR)' && pnpm install
+	@cd '$(FRONTEND_DIR)' && "$$HOME/.local/bin/pnpm" install
 	@echo "✓ bootstrap complete"
 	@$(MAKE) env-status
 
