@@ -27,7 +27,9 @@ if (!workerDir || !frontendDir) {
 }
 
 // worker: docker/.env (운영 비밀) + WORKER_DIR/.env (로컬 override) 순으로 로드
+// PATH에 시스템 bin 보장 — nvidia-smi (/usr/bin), pynvml 등 외부 명령 접근
 const workerScript = (uvicornArgs) =>
+  `export PATH="/usr/local/bin:/usr/bin:/bin:/usr/local/cuda/bin:$PATH"; ` +
   `set -a; ` +
   `[ -f "${opsDockerEnv}" ] && source "${opsDockerEnv}"; ` +
   `[ -f .env ] && source .env; ` +
