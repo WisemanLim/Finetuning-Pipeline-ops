@@ -59,7 +59,8 @@ Web(Node,Script)/
     │   ├── .env.example
     │   └── README.md             # Docker 통합 가이드
     ├── scripts/
-    │   └── reaper.py             # 자원 회수 사이드카
+    │   ├── reaper.py             # 자원 회수 사이드카
+    │   └── ecosystem.config.cjs  # PM2 ecosystem (worker/web dev/prod 정의)
     ├── Makefile                  # bootstrap / dev / test / build / docker-*
     └── README.md                 # 본 문서
 ```
@@ -165,20 +166,24 @@ docker compose -f compose.dev.yaml -f compose.dev.gpu.yaml up -d --build
 
 Docker for Mac은 Linux VM 안에서 동작 → MPS 미접근. 호스트의 Apple Silicon GPU/MPS, 빠른 핫리로드, 직접 디버깅을 활용하려면 인프라만 컨테이너로 두고 worker/web을 호스트에서 직접 실행.
 
-**원커맨드** (백그라운드 + PID 추적):
+**원커맨드** (PM2 백그라운드 관리):
 
 ```bash
-make docker-dev-via-host    # 인프라 → make dev-worker + dev-web을 nohup으로 background
-make docker-prod-via-host   # 인프라 → pnpm build → make prod-worker + prod-web-runtime background
+make docker-dev-via-host    # 인프라(docker) → PM2 start wfp-worker-dev + wfp-web-dev
+make docker-prod-via-host   # 인프라(docker) → pnpm build → PM2 start wfp-worker-prod + wfp-web-prod
 
-make host-status            # 프로세스 상태
-make host-logs              # worker + web 로그 동시 tail
-make host-down              # 호스트 프로세스 정지 (자식 프로세스까지 정리)
+make host-status            # pm2 list (테이블)
+make host-logs              # pm2 logs (worker + web 통합)
+make host-monit             # pm2 monit (실시간 CPU/메모리)
+make host-restart           # 재시작 (코드 변경 반영)
+make host-down              # pm2 delete (전체 정리)
 ```
 
-PID/로그는 `.host-pids/`, `.host-logs/`에 저장 (gitignore 적용).
-
-via-host는 내부적으로 `nohup $(MAKE) <target>` 패턴 — 명령 정의가 foreground 타겟(`dev-worker`/`prod-worker` 등)과 100% 동일. 단일 소스, 차이는 실행 컨텍스트(foreground/background)뿐.
+via-host는 `scripts/ecosystem.config.cjs`의 PM2 ecosystem 사용:
+- 자동 재시작 (`autorestart: true`, `max_restarts: 10`)
+- 중앙 로그 (`.host-logs/{worker,web}.{log,error.log}`)
+- bash 래퍼로 `.env` 자동 로드
+- PID 관리 / 신호 전파 / 좀비 프로세스 정리 PM2가 담당
 
 **수동 foreground** (별도 터미널, Ctrl+C 정지):
 
@@ -477,14 +482,16 @@ make dev-web                # pnpm dev (HMR)
 make prod-worker            # uvicorn workers=2 (.env 자동 로드)
 make prod-web               # pnpm build → pnpm start
 
-# 하이브리드 — 인프라(Docker) + worker/web(호스트 background, PID 추적)
-make docker-dev-via-host    # docker-infra-start → nohup make dev-worker + dev-web
-make docker-prod-via-host   # docker-infra-start → pnpm build → nohup make prod-worker + prod-web-runtime
-make host-status            # 호스트 프로세스 상태
-make host-logs              # worker + web 로그 동시 tail
-make host-logs-worker       # worker 로그만
-make host-logs-web          # web 로그만
-make host-down              # 호스트 프로세스 정지 (make PID + 자식 + 잔여 uvicorn/next-server 정리)
+# 하이브리드 — 인프라(Docker) + worker/web(호스트 PM2 관리)
+make docker-dev-via-host    # docker-infra + PM2 start wfp-worker-dev/wfp-web-dev
+make docker-prod-via-host   # docker-infra + pnpm build + PM2 start wfp-worker-prod/wfp-web-prod
+make host-status            # pm2 list (테이블)
+make host-logs              # pm2 logs (통합)
+make host-logs-worker       # pm2 logs wfp-worker-*
+make host-logs-web          # pm2 logs wfp-web-*
+make host-restart           # pm2 restart 전체 (코드 변경 반영)
+make host-monit             # pm2 monit (실시간 CPU/메모리)
+make host-down              # pm2 delete + save
 
 # 인프라만
 make docker-infra           # postgres/redis/minio/mailhog (별도 터미널에서 dev-worker/dev-web 수동)

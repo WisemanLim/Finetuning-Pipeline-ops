@@ -5,12 +5,12 @@
 
 SHELL := /bin/bash
 .PHONY: help bootstrap dev test lint build clean env-check \
-        dev-worker dev-web prod-worker prod-web prod-web-runtime \
+        dev-worker dev-web prod-worker prod-web \
         docker-dev docker-dev-cpu docker-dev-gpu \
         docker-prod docker-prod-cpu docker-prod-gpu \
         docker-prod-tls docker-prod-tls-gpu \
         docker-infra-start docker-dev-via-host docker-prod-via-host \
-        host-deps-check host-down host-logs host-logs-worker host-logs-web host-status \
+        host-deps-check host-down host-restart host-logs host-logs-worker host-logs-web host-status host-monit \
         docker-down docker-logs traefik-diag
 
 # -----------------------------------------------------------------------------
@@ -54,10 +54,27 @@ help: ## 명령 목록
 # -----------------------------------------------------------------------------
 # Setup
 # -----------------------------------------------------------------------------
-bootstrap: ## 전체 의존성 설치 (uv + pnpm)
+bootstrap: ## 전체 의존성 설치 (uv + pnpm + pm2 자동 설치)
+	@# uv 자동 설치 (~/.local/bin/uv)
+	@if ! command -v uv >/dev/null 2>&1 && [ ! -x "$$HOME/.local/bin/uv" ]; then \
+	  echo "→ uv 자동 설치 (https://astral.sh/uv)"; \
+	  curl -LsSf https://astral.sh/uv/install.sh | sh; \
+	fi
+	@# pnpm corepack 활성화
+	@if ! command -v pnpm >/dev/null 2>&1; then \
+	  echo "→ pnpm 활성화 (corepack)"; \
+	  corepack enable && corepack prepare pnpm@11 --activate || \
+	    { echo "✗ corepack 실패 — npm i -g pnpm@11 직접 실행 필요"; exit 1; }; \
+	fi
+	@# pm2 자동 설치 (process manager — nohup 대체)
+	@if ! command -v pm2 >/dev/null 2>&1; then \
+	  echo "→ pm2 자동 설치 (npm i -g pm2)"; \
+	  npm i -g pm2 || { echo "✗ pm2 설치 실패 — 수동: npm i -g pm2"; exit 1; }; \
+	fi
 	@echo "→ Finetuning-Pipeline-worker (Python 3.12 + uv)"
-	cd '$(WORKER_DIR)' && uv venv .venv --python 3.12 && \
-	  uv pip install -e ".[dev]" --python .venv/bin/python
+	@UV=$$(command -v uv 2>/dev/null || echo $$HOME/.local/bin/uv); \
+	cd '$(WORKER_DIR)' && $$UV venv .venv --python 3.12 && \
+	  $$UV pip install -e ".[dev]" --python .venv/bin/python
 	@echo "→ Finetuning-Pipeline-frontend (Node 20 + pnpm)"
 	cd '$(FRONTEND_DIR)' && pnpm install
 	@echo "✓ bootstrap complete"
@@ -183,121 +200,89 @@ docker-prod-tls-gpu: env-check ## 운영 스택 기동 + TLS + GPU
 	cd docker && $(DC_ENV) docker compose -f compose.prod.yaml -f compose.prod.gpu.yaml -f compose.prod.tls.yaml up -d --build
 
 # -----------------------------------------------------------------------------
-# 하이브리드 모드 — 인프라(Docker) + worker/web(호스트 직접)
-# Apple Silicon MPS, 호스트 GPU 직접 접근, 빠른 재시작 등 활용
+# 하이브리드 모드 — 인프라(Docker) + worker/web(호스트 PM2 관리)
+# PM2가 nohup 대체 — 자동 재시작, 중앙 로그, 상태 모니터링 제공
 # -----------------------------------------------------------------------------
-HOST_PID_DIR := $(MAKEFILE_DIR)/.host-pids
 HOST_LOG_DIR := $(MAKEFILE_DIR)/.host-logs
+PM2_ECO      := $(MAKEFILE_DIR)/scripts/ecosystem.config.cjs
+PM2_ENV      := WORKER_DIR='$(WORKER_DIR)' FRONTEND_DIR='$(FRONTEND_DIR)' HOST_LOG_DIR='$(HOST_LOG_DIR)'
 
-# 사전 검증 — 바이너리 존재 여부 (PATH 의존 X)
+# 사전 검증 — 모든 필수 바이너리 (uv는 bootstrap 책임, 여기는 런타임만)
 host-deps-check:
 	@if [ ! -x '$(WORKER_DIR)/.venv/bin/uvicorn' ]; then \
 	  echo "✗ $(WORKER_DIR)/.venv/bin/uvicorn 미설치"; \
-	  echo "  해결: cd '$(WORKER_DIR)' && uv venv .venv --python 3.12 && uv pip install -e '.[dev]' --python .venv/bin/python"; \
-	  echo "  또는: make bootstrap"; \
+	  echo "  해결: make bootstrap   (uv + venv + 의존성 자동 설치)"; \
 	  exit 1; \
 	fi
 	@if ! command -v pnpm >/dev/null 2>&1; then \
 	  echo "✗ pnpm 미설치 (PATH=$$PATH)"; \
-	  echo "  해결: npm i -g pnpm@11   또는   corepack enable && corepack prepare pnpm@11 --activate"; \
+	  echo "  해결: make bootstrap   (corepack 활성화)"; \
+	  exit 1; \
+	fi
+	@if ! command -v pm2 >/dev/null 2>&1; then \
+	  echo "✗ pm2 미설치"; \
+	  echo "  해결: make bootstrap   또는   npm i -g pm2"; \
 	  exit 1; \
 	fi
 	@if [ ! -d '$(FRONTEND_DIR)/node_modules' ]; then \
 	  echo "⚠  $(FRONTEND_DIR)/node_modules 없음 — pnpm install 자동 실행"; \
-	  cd '$(FRONTEND_DIR)' && pnpm install --frozen-lockfile || cd '$(FRONTEND_DIR)' && pnpm install; \
+	  cd '$(FRONTEND_DIR)' && (pnpm install --frozen-lockfile || pnpm install); \
 	fi
 
-# make 타겟을 백그라운드로 launch + PID 검증 매크로
-# $(1)=name(worker/web)  $(2)=make target  $(3)=설명문구  $(4)=startup 대기초
-define _launch_bg
-	echo "→ 호스트 $(1) 기동 ($(3), 로그: $(HOST_LOG_DIR)/$(1).log)"; \
-	nohup $(MAKE) -s -C '$(MAKEFILE_DIR)' $(2) \
-	  > $(HOST_LOG_DIR)/$(1).log 2>&1 & echo $$$$! > $(HOST_PID_DIR)/$(1).pid; \
-	sleep $(4); \
-	pid=$$$$(cat $(HOST_PID_DIR)/$(1).pid); \
-	if ! kill -0 $$$$pid 2>/dev/null; then \
-	  echo "✗ $(1) 기동 실패. 최근 로그:"; \
-	  tail -30 $(HOST_LOG_DIR)/$(1).log; \
-	  rm -f $(HOST_PID_DIR)/$(1).pid; exit 1; \
-	fi; \
-	echo "✓ $(1) make-PID $$$$pid"
-endef
-
-docker-dev-via-host: docker-infra-start host-deps-check ## 인프라(Docker) + dev-worker/dev-web 백그라운드 기동
-	@mkdir -p $(HOST_PID_DIR) $(HOST_LOG_DIR)
-	@$(call _launch_bg,worker,dev-worker,uvicorn --reload,2)
-	@$(call _launch_bg,web,dev-web,pnpm dev,3)
+docker-dev-via-host: docker-infra-start host-deps-check ## 인프라(Docker) + dev-worker/dev-web (PM2 관리)
+	@mkdir -p $(HOST_LOG_DIR)
+	@echo "→ PM2로 worker/web 기동 (ecosystem: scripts/ecosystem.config.cjs)"
+	@$(PM2_ENV) pm2 start '$(PM2_ECO)' --only wfp-worker-dev,wfp-web-dev --update-env
+	@pm2 save --force >/dev/null 2>&1 || true
+	@sleep 2
+	@$(MAKE) host-status
 	@echo ""
 	@echo "✓ 하이브리드 dev 기동 완료"
 	@echo "  worker → http://localhost:8000"
 	@echo "  web    → http://localhost:3000"
 	@echo "  로그: make host-logs / 정지: make host-down"
 
-docker-prod-via-host: docker-infra-start env-check host-deps-check ## 인프라(Docker) + prod-worker/prod-web 백그라운드 기동
-	@mkdir -p $(HOST_PID_DIR) $(HOST_LOG_DIR)
+docker-prod-via-host: docker-infra-start env-check host-deps-check ## 인프라(Docker) + prod-worker/prod-web (PM2 관리, pnpm build 사전)
+	@mkdir -p $(HOST_LOG_DIR)
 	@echo "→ web 프로덕션 빌드 (pnpm build, 로그: $(HOST_LOG_DIR)/web-build.log)"
 	@cd '$(FRONTEND_DIR)' && pnpm build > $(HOST_LOG_DIR)/web-build.log 2>&1 || { \
 	  echo "✗ pnpm build 실패. 최근 로그:"; tail -30 $(HOST_LOG_DIR)/web-build.log; exit 1; \
 	}
 	@echo "✓ web 빌드 성공"
-	@$(call _launch_bg,worker,prod-worker,uvicorn workers=2,2)
-	@$(call _launch_bg,web,prod-web-runtime,pnpm start,3)
+	@echo "→ PM2로 worker/web 기동 (ecosystem: scripts/ecosystem.config.cjs)"
+	@$(PM2_ENV) pm2 start '$(PM2_ECO)' --only wfp-worker-prod,wfp-web-prod --update-env
+	@pm2 save --force >/dev/null 2>&1 || true
+	@sleep 2
+	@$(MAKE) host-status
 	@echo ""
 	@echo "✓ 하이브리드 prod 기동 완료"
 	@echo "  worker → http://localhost:8000"
 	@echo "  web    → http://localhost:3000"
 	@echo "  로그: make host-logs / 정지: make host-down"
 
-# prod-via-host 전용 — 빌드 없이 pnpm start만 (build는 메인 타겟에서 사전 실행)
-prod-web-runtime:
-	cd '$(FRONTEND_DIR)' && exec pnpm start
+host-down: ## PM2로 관리되는 호스트 worker/web 정지 + 삭제
+	@pm2 delete wfp-worker-dev wfp-worker-prod wfp-web-dev wfp-web-prod 2>/dev/null || true
+	@pm2 save --force >/dev/null 2>&1 || true
+	@echo "✓ PM2 프로세스 정리 완료"
 
-host-down: ## 호스트에서 띄운 worker/web 정지 (make 프로세스 + 자식 모두 종료)
-	@if [ -d $(HOST_PID_DIR) ]; then \
-	  for f in $(HOST_PID_DIR)/*.pid; do \
-	    if [ -f "$$f" ]; then \
-	      name=$$(basename $$f .pid); pid=$$(cat $$f); \
-	      if kill -0 $$pid 2>/dev/null; then \
-	        pkill -P $$pid 2>/dev/null || true; \
-	        kill $$pid 2>/dev/null || true; \
-	        sleep 0.5; \
-	        kill -0 $$pid 2>/dev/null && kill -9 $$pid 2>/dev/null || true; \
-	        echo "✓ $$name 종료 (make-PID $$pid + 자식)"; \
-	      else \
-	        echo "- $$name PID $$pid 이미 종료됨"; \
-	      fi; \
-	      rm $$f; \
-	    fi; \
-	  done; \
-	else \
-	  echo "PID 디렉토리 없음 (호스트 프로세스 미기동)"; \
-	fi
-	@# 잔여 uvicorn/next-server 정리 (포트 충돌 방지)
-	@pkill -f "uvicorn wfp_worker.server" 2>/dev/null || true
-	@pkill -f "next-server\|node.*server.js" 2>/dev/null || true
+host-restart: ## PM2 프로세스 재시작 (코드 변경 반영)
+	@pm2 restart wfp-worker-dev wfp-worker-prod wfp-web-dev wfp-web-prod 2>/dev/null || \
+	  echo "재시작할 프로세스 없음"
 
-host-logs: ## 호스트 worker + web 로그 동시 추적
-	@if [ ! -d $(HOST_LOG_DIR) ]; then echo "로그 디렉토리 없음"; exit 1; fi
-	tail -f $(HOST_LOG_DIR)/worker.log $(HOST_LOG_DIR)/web.log
+host-logs: ## PM2 통합 로그 (worker + web)
+	pm2 logs
 
-host-logs-worker: ## 호스트 worker 로그만
-	tail -f $(HOST_LOG_DIR)/worker.log
+host-logs-worker: ## PM2 worker 로그만
+	pm2 logs wfp-worker-dev wfp-worker-prod
 
-host-logs-web: ## 호스트 web 로그만
-	tail -f $(HOST_LOG_DIR)/web.log
+host-logs-web: ## PM2 web 로그만
+	pm2 logs wfp-web-dev wfp-web-prod
 
-host-status: ## 호스트 worker/web 프로세스 상태
-	@if [ ! -d $(HOST_PID_DIR) ]; then echo "PID 디렉토리 없음"; exit 0; fi
-	@for f in $(HOST_PID_DIR)/*.pid; do \
-	  if [ -f "$$f" ]; then \
-	    name=$$(basename $$f .pid); pid=$$(cat $$f); \
-	    if kill -0 $$pid 2>/dev/null; then \
-	      echo "✓ $$name PID $$pid (running)"; \
-	    else \
-	      echo "✗ $$name PID $$pid (dead)"; \
-	    fi; \
-	  fi; \
-	done
+host-status: ## PM2 프로세스 상태 (테이블 형식)
+	@pm2 list
+
+host-monit: ## PM2 실시간 모니터 (CPU/메모리/로그)
+	pm2 monit
 
 docker-down: ## 컨테이너 정지 (볼륨 유지) — dev/prod 모두 정지
 	cd docker && $(DC_ENV) docker compose $(DEV_FILES) down 2>/dev/null || true

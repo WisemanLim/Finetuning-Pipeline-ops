@@ -110,17 +110,19 @@ docker compose -f compose.dev.yaml logs -f worker
 - 코드 변경 즉시 반영 (uvicorn `--reload` + Next.js HMR)
 - 직접 디버깅 (IDE 디버거, breakpoint)
 
-**원커맨드** (백그라운드 + PID 추적):
+**원커맨드** (PM2 백그라운드 관리):
 
 ```bash
-make docker-dev-via-host    # 인프라 → nohup make dev-worker + nohup make dev-web
-make docker-prod-via-host   # 인프라 → pnpm build → nohup make prod-worker + nohup make prod-web-runtime
+make docker-dev-via-host    # 인프라 + PM2 start wfp-worker-dev/wfp-web-dev
+make docker-prod-via-host   # 인프라 + pnpm build + PM2 start wfp-worker-prod/wfp-web-prod
 
-make host-status            # 프로세스 상태
-make host-logs              # worker + web 로그 동시 tail
-make host-logs-worker       # worker만
-make host-logs-web          # web만
-make host-down              # 호스트 프로세스 정지 (자식 프로세스 + 잔여 uvicorn/next-server 포함)
+make host-status            # pm2 list
+make host-logs              # pm2 logs (worker + web 통합)
+make host-logs-worker       # pm2 logs wfp-worker-*
+make host-logs-web          # pm2 logs wfp-web-*
+make host-restart           # pm2 restart 전체 (코드 변경 반영)
+make host-monit             # pm2 monit (실시간 CPU/메모리)
+make host-down              # pm2 delete + save
 ```
 
 **foreground 타겟** (별도 터미널, Ctrl+C 정지):
@@ -130,14 +132,32 @@ make host-down              # 호스트 프로세스 정지 (자식 프로세스
 | `dev-worker` | `uvicorn ... --reload` | 핫리로드 |
 | `dev-web` | `pnpm dev` | HMR |
 | `prod-worker` | `uvicorn ... --workers 2` | 멀티 워커 |
-| `prod-web` | `pnpm build && pnpm start` | 프로덕션 |
-| `prod-web-runtime` | `pnpm start` (빌드 없이) | via-host 내부 전용 |
+| `prod-web` | `pnpm build && pnpm start` | 프로덕션 (수동) |
 
-via-host는 위 foreground 타겟을 `nohup $(MAKE) -s <target>` 패턴으로 background 실행:
+**PM2 ecosystem** (`scripts/ecosystem.config.cjs`):
+
+| 앱 이름 | cwd | 명령 | 옵션 |
+|---|---|---|---|
+| `wfp-worker-dev` | `$WORKER_DIR` | `bash -c '.env 로드 + uvicorn --reload'` | autorestart, max_restarts=10 |
+| `wfp-worker-prod` | `$WORKER_DIR` | `bash -c '.env 로드 + uvicorn --workers 2'` | autorestart, min_uptime=30s |
+| `wfp-web-dev` | `$FRONTEND_DIR` | `bash -c 'pnpm dev'` | autorestart |
+| `wfp-web-prod` | `$FRONTEND_DIR` | `bash -c 'pnpm start'` (빌드는 Makefile 사전 실행) | autorestart |
+
+via-host 내부 동작:
 - `docker-infra-start` 의존 → postgres/redis/minio/mailhog 컨테이너 기동 (메시지 없음)
-- `host-deps-check` 의존 → `.venv/bin/uvicorn` + `pnpm` 존재 검증 + 누락 시 명확한 해결책 안내
-- worker/web 각각 sleep 후 `kill -0 PID`로 생존 검증, 실패 시 최근 30줄 로그 + abort
-- `host-down`: make PID + `pkill -P` 자식 + 잔여 `uvicorn wfp_worker.server` / `next-server` 정리
+- `host-deps-check` 의존 → `.venv/bin/uvicorn` + `pnpm` + `pm2` 존재 검증 + 누락 시 `make bootstrap` 안내
+- `pm2 start` + `--only <앱이름>` → ecosystem에서 해당 앱만 기동
+- 자동 재시작 / 신호 처리 / 좀비 정리는 PM2 책임
+- 로그는 `.host-logs/{worker,web}.{log,error.log}` (PM2 `out_file`/`error_file`)
+
+**bootstrap 자동 설치**:
+
+`make bootstrap`이 다음을 자동 설치 (미설치 시):
+- **uv** — `curl -LsSf https://astral.sh/uv/install.sh | sh` → `~/.local/bin/uv`
+- **pnpm** — `corepack enable && corepack prepare pnpm@11 --activate`
+- **pm2** — `npm i -g pm2`
+- worker venv 생성 + 의존성 설치
+- frontend `pnpm install`
 
 **수동 infra만**:
 
