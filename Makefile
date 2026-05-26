@@ -329,9 +329,24 @@ host-down: ## PM2 daemon + 좀비 프로세스 + 포트 점유 모두 강제 정
 	@# pkill 패턴이 자기 부모 bash argv를 매칭하지 않도록 별도 script 파일로 실행.
 	@'$(MAKEFILE_DIR)/scripts/host-down.sh'
 
-host-restart: ## PM2 프로세스 재시작 (코드 변경 반영)
-	@pm2 restart wfp-worker-dev wfp-worker-prod wfp-web-dev wfp-web-prod 2>/dev/null || \
-	  echo "재시작할 프로세스 없음"
+host-restart: ## PM2 프로세스 재시작 (코드 + env 변경 반영)
+	@# PM2 daemon 없으면 list 실패 → 메시지 출력 후 종료
+	@if ! pm2 ping >/dev/null 2>&1; then \
+	  echo "✗ PM2 daemon 미실행 — make docker-dev-via-host 또는 docker-prod-via-host 먼저 실행"; \
+	  exit 1; \
+	fi
+	@# 등록된 앱만 대상으로 restart (없는 앱은 조용히 skip)
+	@found=0; \
+	for app in wfp-worker-dev wfp-worker-prod wfp-web-dev wfp-web-prod; do \
+	  if pm2 jlist 2>/dev/null | grep -q "\"name\":\"$$app\""; then \
+	    $(PM2_ENV) pm2 restart $$app --update-env >/dev/null 2>&1 && \
+	      echo "✓ $$app 재시작 (env reload)"; \
+	    found=$$((found+1)); \
+	  fi; \
+	done; \
+	if [ $$found -eq 0 ]; then \
+	  echo "재시작할 PM2 앱 없음"; \
+	fi
 
 host-logs: ## PM2 통합 로그 (worker + web)
 	pm2 logs
