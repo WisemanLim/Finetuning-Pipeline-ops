@@ -168,22 +168,28 @@ Docker for Mac은 Linux VM 안에서 동작 → MPS 미접근. 호스트의 Appl
 **원커맨드** (백그라운드 + PID 추적):
 
 ```bash
-make docker-dev-via-host   # 인프라 → 호스트 worker(uvicorn --reload) + web(pnpm dev)
-make docker-prod-via-host  # 인프라 → 호스트 worker(workers=2) + web(pnpm build/start)
+make docker-dev-via-host    # 인프라 → make dev-worker + dev-web을 nohup으로 background
+make docker-prod-via-host   # 인프라 → pnpm build → make prod-worker + prod-web-runtime background
 
-make host-status           # 프로세스 상태
-make host-logs             # worker + web 로그 동시 tail
-make host-down             # 호스트 프로세스 정지
+make host-status            # 프로세스 상태
+make host-logs              # worker + web 로그 동시 tail
+make host-down              # 호스트 프로세스 정지 (자식 프로세스까지 정리)
 ```
 
 PID/로그는 `.host-pids/`, `.host-logs/`에 저장 (gitignore 적용).
 
-**수동** (foreground, 별도 터미널 권장):
+via-host는 내부적으로 `nohup $(MAKE) <target>` 패턴 — 명령 정의가 foreground 타겟(`dev-worker`/`prod-worker` 등)과 100% 동일. 단일 소스, 차이는 실행 컨텍스트(foreground/background)뿐.
+
+**수동 foreground** (별도 터미널, Ctrl+C 정지):
 
 ```bash
 make docker-infra   # postgres/redis/minio/mailhog만 기동
-make dev-worker     # 별도 터미널 — 호스트 venv에서 uvicorn 실행 (MPS 자동 사용)
-make dev-web        # 별도 터미널 — pnpm dev
+# 개발:
+make dev-worker     # 별도 터미널 — uvicorn --reload + MPS 자동 사용
+make dev-web        # 별도 터미널 — pnpm dev (HMR)
+# 운영:
+make prod-worker    # uvicorn workers=2
+make prod-web       # pnpm build → pnpm start
 ```
 
 상세 가이드 + 운영 환경(Traefik TLS + GPU + 백업): [`docker/README.md`](docker/README.md)
@@ -465,19 +471,23 @@ make docker-prod-cpu        # CPU 강제 (prod)
 make docker-prod-gpu        # GPU 강제 (prod)
 make docker-prod-tls-gpu    # TLS + GPU (prod)
 
+# 호스트 직접 실행 — foreground (Ctrl+C로 정지)
+make dev-worker             # uvicorn --reload (핫리로드, .env 자동 로드)
+make dev-web                # pnpm dev (HMR)
+make prod-worker            # uvicorn workers=2 (.env 자동 로드)
+make prod-web               # pnpm build → pnpm start
+
 # 하이브리드 — 인프라(Docker) + worker/web(호스트 background, PID 추적)
-make docker-dev-via-host    # dev 모드 (uvicorn --reload + pnpm dev)
-make docker-prod-via-host   # prod 모드 (uvicorn workers=2 + pnpm build/start)
+make docker-dev-via-host    # docker-infra-start → nohup make dev-worker + dev-web
+make docker-prod-via-host   # docker-infra-start → pnpm build → nohup make prod-worker + prod-web-runtime
 make host-status            # 호스트 프로세스 상태
 make host-logs              # worker + web 로그 동시 tail
 make host-logs-worker       # worker 로그만
 make host-logs-web          # web 로그만
-make host-down              # 호스트 프로세스 정지
+make host-down              # 호스트 프로세스 정지 (make PID + 자식 + 잔여 uvicorn/next-server 정리)
 
-# 인프라만 (수동 실행 — 별도 터미널에서 dev-worker/dev-web 직접)
-make docker-infra           # postgres/redis/minio/mailhog
-make dev-worker             # 호스트에서 워커 직접 실행 (foreground)
-make dev-web                # 호스트에서 프론트엔드 직접 실행 (foreground)
+# 인프라만
+make docker-infra           # postgres/redis/minio/mailhog (별도 터미널에서 dev-worker/dev-web 수동)
 
 # 관리
 make docker-logs            # 워커 로그 추적
@@ -485,6 +495,32 @@ make docker-ps              # 컨테이너 상태
 make docker-down            # 정지 (dev + prod 둘 다)
 make docker-clean           # 정지 + 볼륨 삭제 (데이터 손실)
 make ci                     # lint + typecheck + test
+
+# 진단 (404 / 라우팅 문제)
+make traefik-diag           # Traefik 컨테이너/로그/라벨/네트워크/API/HTTP 응답 일괄 확인
+```
+
+### Traefik 디버그 환경 변수
+
+라우팅 문제(404 page not found) 발생 시 Traefik 진단 옵션을 env로 켤 수 있다.
+
+| 변수 | 기본 | 효과 |
+|---|---|---|
+| `TRAEFIK_LOG_LEVEL` | `INFO` | `DEBUG` 설정 시 상세 라우터/서비스 검출 로그 |
+| `TRAEFIK_API` | `false` | `true` 설정 시 Traefik dashboard + API 활성화 |
+| `TRAEFIK_API_PORT` | `127.0.0.1:8090` | API/dashboard 바인딩 (기본 localhost 전용) |
+| `TRAEFIK_DOCKER_NETWORK` | `wfp-prod_wfp` | Traefik이 백엔드 컨테이너에 도달할 docker 네트워크 |
+
+```bash
+# DEBUG 로그 + API 활성화로 재기동
+TRAEFIK_LOG_LEVEL=DEBUG TRAEFIK_API=true make docker-prod
+
+# 진단 실행
+make traefik-diag
+
+# API 직접 조회 (SSH 터널 또는 서버 콘솔)
+curl http://127.0.0.1:8090/api/http/routers | jq
+curl http://127.0.0.1:8090/api/http/services | jq
 ```
 
 ### 환경 자동 감지
