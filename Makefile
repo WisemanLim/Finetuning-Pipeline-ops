@@ -296,6 +296,11 @@ host-deps-check:
 
 docker-dev-via-host: docker-infra-start dev-env-check host-deps-check ## 인프라(Docker) + dev-worker/dev-web (PM2 관리)
 	@mkdir -p $(HOST_LOG_DIR)
+	@echo "→ $(GPU_MSG)"
+	@if [ "$(HAS_GPU)" = "1" ]; then \
+	  echo "  via-host 모드: worker는 호스트 PM2로 실행 → 호스트 GPU 직접 사용 (compose.*.gpu.yaml 불필요)"; \
+	  echo "  PyTorch CUDA 휠 미설치 시 학습 시 CUDA 비활성. 설치: make install-deps"; \
+	fi
 	@echo "→ PM2로 worker/web 기동 (ecosystem: scripts/ecosystem.config.cjs)"
 	@$(PM2_ENV) pm2 start '$(PM2_ECO)' --only wfp-worker-dev,wfp-web-dev --update-env
 	@pm2 save --force >/dev/null 2>&1 || true
@@ -309,6 +314,11 @@ docker-dev-via-host: docker-infra-start dev-env-check host-deps-check ## 인프�
 
 docker-prod-via-host: docker-infra-start env-check host-deps-check ## 인프라(Docker) + prod-worker/prod-web (PM2 관리, pnpm build 사전)
 	@mkdir -p $(HOST_LOG_DIR)
+	@echo "→ $(GPU_MSG)"
+	@if [ "$(HAS_GPU)" = "1" ]; then \
+	  echo "  via-host 모드: worker는 호스트 PM2로 실행 → 호스트 GPU 직접 사용 (compose.*.gpu.yaml 불필요)"; \
+	  echo "  PyTorch CUDA 휠 미설치 시 학습 시 CUDA 비활성. 설치: make install-deps"; \
+	fi
 	@echo "→ web 프로덕션 빌드 (pnpm build, 로그: $(HOST_LOG_DIR)/web-build.log)"
 	@cd '$(FRONTEND_DIR)' && pnpm build > $(HOST_LOG_DIR)/web-build.log 2>&1 || { \
 	  echo "✗ pnpm build 실패. 최근 로그:"; tail -30 $(HOST_LOG_DIR)/web-build.log; exit 1; \
