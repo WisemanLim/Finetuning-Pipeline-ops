@@ -176,7 +176,7 @@ make host-status            # pm2 list (테이블)
 make host-logs              # pm2 logs (worker + web 통합)
 make host-monit             # pm2 monit (실시간 CPU/메모리)
 make host-restart           # 재시작 (코드 변경 반영)
-make host-down              # pm2 delete (전체 정리)
+make host-down              # pm2 delete all + pm2 kill (daemon) + 포트 8000/3000 좀비 정리
 ```
 
 via-host는 `scripts/ecosystem.config.cjs`의 PM2 ecosystem 사용:
@@ -491,7 +491,7 @@ make host-logs-worker       # pm2 logs wfp-worker-*
 make host-logs-web          # pm2 logs wfp-web-*
 make host-restart           # pm2 restart 전체 (코드 변경 반영)
 make host-monit             # pm2 monit (실시간 CPU/메모리)
-make host-down              # pm2 delete + save
+make host-down              # pm2 delete all + pm2 kill (daemon) + 포트 8000/3000 좀비 정리
 
 # 인프라만
 make docker-infra           # postgres/redis/minio/mailhog (별도 터미널에서 dev-worker/dev-web 수동)
@@ -499,12 +499,35 @@ make docker-infra           # postgres/redis/minio/mailhog (별도 터미널에�
 # 관리
 make docker-logs            # 워커 로그 추적
 make docker-ps              # 컨테이너 상태
-make docker-down            # 정지 (dev + prod 둘 다)
-make docker-clean           # 정지 + 볼륨 삭제 (데이터 손실)
+make docker-down            # 전체 정지 — PM2(daemon kill) + dev/prod/infra compose + 포트 8000/3000 좀비
+make docker-clean           # 전체 정지 + 볼륨 삭제 (데이터 손실)
 make ci                     # lint + typecheck + test
 
 # 진단 (404 / 라우팅 문제)
 make traefik-diag           # Traefik 컨테이너/로그/라벨/네트워크/API/HTTP 응답 일괄 확인
+```
+
+### 정지 / 정리 동작
+
+`make docker-down` 한 번에 모든 모드를 정지한다. 어떤 명령으로 기동했든 (compose dev/prod/infra, GPU/TLS 오버라이드, via-host PM2) 모두 처리.
+
+| 단계 | 동작 |
+|---|---|
+| 1 | `pm2 delete all` → 모든 PM2 앱 등록 해제 |
+| 2 | `pm2 kill` → PM2 daemon 종료 (자동 재시작 차단) |
+| 3 | `pkill` — `uvicorn wfp_worker.server` / `next-server` / `pnpm dev|start` / `multiprocessing.spawn` 자식 정리 |
+| 4 | 포트 8000(worker) / 3000(web) lsof → SIGTERM → 1초 후 잔여면 SIGKILL |
+| 5 | `docker compose down` — dev/prod 모든 조합 (CPU/GPU/TLS) + infra |
+
+`make docker-clean`은 위 단계 + 볼륨까지 삭제 (`down -v`). 데이터 손실 주의.
+
+검증:
+
+```bash
+make docker-down
+ps -ef | grep -E "uvicorn|next-server|PM2" | grep -v grep   # 빈 출력
+netstat -nltup 2>/dev/null | grep -E ":8000|:3000"          # 빈 출력
+docker ps                                                    # wfp-* 없음
 ```
 
 ### Traefik 디버그 환경 변수

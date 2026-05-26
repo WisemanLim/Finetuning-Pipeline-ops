@@ -122,7 +122,7 @@ make host-logs-worker       # pm2 logs wfp-worker-*
 make host-logs-web          # pm2 logs wfp-web-*
 make host-restart           # pm2 restart 전체 (코드 변경 반영)
 make host-monit             # pm2 monit (실시간 CPU/메모리)
-make host-down              # pm2 delete + save
+make host-down              # pm2 delete all + pm2 kill (daemon) + 포트 8000/3000 좀비 정리
 ```
 
 **foreground 타겟** (별도 터미널, Ctrl+C 정지):
@@ -322,9 +322,19 @@ Makefile 단축 (권장):
 make docker-info        # 현재 감지 모드 (GPU/CPU + 경로)
 make docker-ps          # 컨테이너 상태
 make docker-logs        # 워커 로그 추적
-make docker-down        # 정지 (dev + prod 둘 다)
-make docker-clean       # 정지 + 볼륨 삭제 (데이터 손실)
+make docker-down        # 전체 정지 — PM2(daemon kill) + dev/prod/infra compose + 포트 좀비
+make docker-clean       # 전체 정지 + 볼륨 삭제 (데이터 손실)
 ```
+
+`docker-down`이 정리하는 대상:
+
+| 종류 | 명령 |
+|---|---|
+| PM2 앱 (via-host로 띄운 worker/web) | `pm2 delete all` |
+| PM2 daemon (자동 재시작 차단) | `pm2 kill` |
+| 좀비 uvicorn/next-server/pnpm/multiprocessing | `pkill -f <pattern>` |
+| 포트 8000(worker)/3000(web) 점유 PID | `lsof -ti :PORT` → SIGTERM → SIGKILL |
+| Docker compose | dev/dev.gpu/prod/prod.gpu/prod.tls/infra 모든 조합 down |
 
 수동 (compose 직접):
 
