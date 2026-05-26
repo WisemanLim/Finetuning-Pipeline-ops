@@ -300,10 +300,36 @@ docker-prod-via-host: docker-infra-start env-check host-deps-check ## 인프라(
 	@echo "  web    → http://localhost:3000"
 	@echo "  로그: make host-logs / 정지: make host-down"
 
-host-down: ## PM2로 관리되는 호스트 worker/web 정지 + 삭제
-	@pm2 delete wfp-worker-dev wfp-worker-prod wfp-web-dev wfp-web-prod 2>/dev/null || true
+host-down: ## PM2 daemon + 좀비 프로세스 + 포트 점유 모두 강제 정지
+	@echo "→ PM2 앱 삭제 + daemon kill (자동 재시작 차단)"
+	@pm2 delete all 2>/dev/null || true
 	@pm2 save --force >/dev/null 2>&1 || true
-	@echo "✓ PM2 프로세스 정리 완료"
+	@pm2 kill 2>/dev/null || true
+	@echo "→ 잔여 프로세스 정리 (uvicorn / next-server / pnpm)"
+	@pkill -TERM -f "uvicorn wfp_worker.server" 2>/dev/null || true
+	@pkill -TERM -f "next-server" 2>/dev/null || true
+	@pkill -TERM -f "pnpm.*\(dev\|start\)" 2>/dev/null || true
+	@pkill -TERM -f "node.*next/dist/bin/next" 2>/dev/null || true
+	@pkill -TERM -f "PM2" 2>/dev/null || true
+	@sleep 1
+	@# 8000 (worker) / 3000 (web) 포트 점유 프로세스 강제 종료
+	@for port in 8000 3000; do \
+	  pids=$$(lsof -ti :$$port 2>/dev/null); \
+	  if [ -n "$$pids" ]; then \
+	    echo "  포트 $$port 점유 PID $$pids → SIGTERM"; \
+	    kill $$pids 2>/dev/null || true; \
+	    sleep 1; \
+	    pids2=$$(lsof -ti :$$port 2>/dev/null); \
+	    if [ -n "$$pids2" ]; then \
+	      echo "  포트 $$port 잔여 PID $$pids2 → SIGKILL"; \
+	      kill -9 $$pids2 2>/dev/null || true; \
+	    fi; \
+	  fi; \
+	done
+	@# 잔여 multiprocessing 자식 (uvicorn workers=2가 fork한 spawn_main 등)
+	@pkill -9 -f "multiprocessing.spawn" 2>/dev/null || true
+	@pkill -9 -f "multiprocessing.resource_tracker" 2>/dev/null || true
+	@echo "✓ 호스트 프로세스 + PM2 daemon 정리 완료"
 
 host-restart: ## PM2 프로세스 재시작 (코드 변경 반영)
 	@pm2 restart wfp-worker-dev wfp-worker-prod wfp-web-dev wfp-web-prod 2>/dev/null || \
@@ -324,10 +350,8 @@ host-status: ## PM2 프로세스 상태 (테이블 형식)
 host-monit: ## PM2 실시간 모니터 (CPU/메모리/로그)
 	pm2 monit
 
-docker-down: ## 모든 모드 정지 — PM2 + dev/prod/infra compose (볼륨 유지)
-	@echo "→ PM2 호스트 프로세스 정지"
-	@pm2 delete wfp-worker-dev wfp-worker-prod wfp-web-dev wfp-web-prod 2>/dev/null || true
-	@pm2 save --force >/dev/null 2>&1 || true
+docker-down: ## 모든 모드 정지 — PM2 + 좀비 프로세스 + dev/prod/infra compose (볼륨 유지)
+	@$(MAKE) -s host-down
 	@echo "→ docker compose dev/prod/infra 정지"
 	@cd docker && $(DC_ENV) docker compose -f compose.dev.yaml -f compose.dev.gpu.yaml down 2>/dev/null || true
 	@cd docker && $(DC_ENV) docker compose -f compose.dev.yaml down 2>/dev/null || true
