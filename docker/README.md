@@ -42,19 +42,21 @@ make docker-info     # 현재 감지 결과 출력
 
 ---
 
-## dev/prod 기능 대칭
+## local/dev/prod 기능 대칭
 
-dev와 prod는 동일 코드/도구 체인. 차이는 빌드 옵션 / 검증 강도 / Traefik 유무.
+3 모드 동일 코드. 차이는 Docker 의존성 / DB / 빌드 옵션 / Traefik.
 
-| 항목 | dev | prod |
-|---|---|---|
-| Worker | `uvicorn --reload` | `uvicorn --workers 1` |
-| Web | `pnpm dev` (HMR) | `pnpm build → pnpm start` |
-| env-check | `dev-env-check` (SUPERVISOR_*만) | `env-check` (8개 키) |
-| Reverse proxy | 직접 포트 (3000/8000) | Traefik (PathPrefix `/ws`→worker, `/`→web) |
-| TLS | — | `compose.prod.tls.yaml` 오버라이드 |
-| PM2 min_uptime | 10s | 30s |
-| 자동화 | HW probe, nvidia-smi fallback, WFP-0203 force, 잡 prefill 재실행 모두 **dev/prod 동일** |
+| 항목 | local | dev | prod |
+|---|---|---|---|
+| Docker | **불필요** | infra만 | infra + worker/web |
+| DB | SQLite | PostgreSQL | PostgreSQL |
+| Worker | `uvicorn --reload` | `uvicorn --reload` | `uvicorn --workers 1` |
+| Web | `pnpm dev` | `pnpm dev` | `pnpm build → start` |
+| env-check | `dev-env-check` | `dev-env-check` | `env-check` (8키) |
+| 라우팅 | 직접 포트 | 직접 포트 | Traefik PathPrefix + 선택 TLS |
+| min_uptime | 10s | 10s | 30s |
+| Hybrid 명령 | `docker-local-via-host` | `docker-dev-via-host` | `docker-prod-via-host` |
+| 공통 | HW probe / nvidia-smi fallback / WFP-0203 force / 잡 prefill 재실행 — **3모드 동일** |
 
 ## 1. 빠른 시작 (개발 환경)
 
@@ -127,6 +129,7 @@ docker compose -f compose.dev.yaml logs -f worker
 **원커맨드** (PM2 백그라운드 관리):
 
 ```bash
+make docker-local-via-host  # Docker 없이 SQLite + PM2 start wfp-worker-local/wfp-web-local
 make docker-dev-via-host    # 인프라 + PM2 start wfp-worker-dev/wfp-web-dev
 make docker-prod-via-host   # 인프라 + pnpm build + PM2 start wfp-worker-prod/wfp-web-prod
 
@@ -154,8 +157,10 @@ make host-down              # pm2 delete all + pm2 kill (daemon) + 포트 8000/3
 |---|---|---|---|
 | `wfp-worker-dev` | `$WORKER_DIR` | `bash -c '.env 로드 + uvicorn --reload'` | autorestart, max_restarts=10 |
 | `wfp-worker-prod` | `$WORKER_DIR` | `bash -c '.env 로드 + uvicorn --workers 1'` | autorestart, min_uptime=30s |
+| `wfp-worker-local` | `$WORKER_DIR` | `bash -c '.env 로드 + DATABASE_URL/REDIS_URL/S3_* unset + uvicorn --reload'` | SQLite default, infra X |
 | `wfp-web-dev` | `$FRONTEND_DIR` | `bash -c 'pnpm dev'` | autorestart |
 | `wfp-web-prod` | `$FRONTEND_DIR` | `bash -c 'pnpm start'` (빌드는 Makefile 사전 실행) | autorestart |
+| `wfp-web-local` | `$FRONTEND_DIR` | `bash -c 'pnpm dev'` | local 모드 — dev와 동일 명령 |
 
 via-host 내부 동작:
 - `docker-infra-start` 의존 → postgres/redis/minio/mailhog 컨테이너 기동 (메시지 없음)

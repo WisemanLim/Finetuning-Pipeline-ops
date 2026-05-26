@@ -152,20 +152,22 @@ rules:
   # ─────────────────────────────────────────
   # Apple Silicon (Unified Memory)
   # ─────────────────────────────────────────
+  # Apple Silicon (M1/M2/M3/M4/M5+) — bitsandbytes/int4 미지원. LoRA + bf16 권장.
   - id: apple_silicon_32gb_plus
     condition:
       gpu_vendor: apple
       unified_memory_gb_min: 32
     plan:
       max_model_params_b: 7
-      strategies: [qlora]
-      quantization: [int4]
-      recommended_strategy: qlora
-      recommended_quant: int4
+      strategies: [lora]
+      quantization: [bf16]
+      recommended_strategy: lora
+      recommended_quant: bf16
       backend: mps
       max_seq_length: 2048
       batch_size: 1
       gradient_accumulation: 8
+      warning: "Apple Silicon은 bitsandbytes/int4 미지원 — LoRA + bf16 사용. 양자화 학습 원하면 mlx-lm 별도 필요."
 
   - id: apple_silicon_16gb
     condition:
@@ -174,14 +176,15 @@ rules:
       unified_memory_gb_max: 31
     plan:
       max_model_params_b: 3
-      strategies: [qlora]
-      quantization: [int4]
-      recommended_strategy: qlora
-      recommended_quant: int4
+      strategies: [lora]
+      quantization: [bf16]
+      recommended_strategy: lora
+      recommended_quant: bf16
       backend: mps
       max_seq_length: 1024
       batch_size: 1
       gradient_accumulation: 8
+      warning: "Apple Silicon은 bitsandbytes/int4 미지원 — LoRA + bf16 사용."
 
   # ─────────────────────────────────────────
   # CPU 전용 (GPU 없음)

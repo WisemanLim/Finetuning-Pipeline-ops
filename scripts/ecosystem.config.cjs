@@ -44,6 +44,19 @@ const webScript = (cmd) =>
   `set +a; ` +
   `exec ${cmd}`;
 
+// local 모드: Docker infra 없이 SQLite + 호스트 worker/web.
+// docker/.env의 DATABASE_URL/REDIS_URL/S3_* 무시 — worker가 SQLite default 사용하도록.
+const workerScriptLocal = (uvicornArgs) =>
+  `export PATH="/usr/local/bin:/usr/bin:/bin:/usr/local/cuda/bin:$PATH"; ` +
+  `set -a; ` +
+  `[ -f "${opsDockerEnv}" ] && source "${opsDockerEnv}"; ` +
+  `[ -f .env ] && source .env; ` +
+  `set +a; ` +
+  // 핵심: 인프라 의존 env 명시적 해제 → 워커는 default SQLite 사용
+  `unset DATABASE_URL REDIS_URL S3_ENDPOINT S3_ACCESS_KEY S3_SECRET_KEY S3_BUCKET; ` +
+  `export WFP_LOCAL_MODE=1; ` +
+  `exec .venv/bin/uvicorn wfp_worker.server:app --host 0.0.0.0 --port 8000 ${uvicornArgs}`;
+
 module.exports = {
   apps: [
     // -------------------------------------------------------------------------
@@ -101,6 +114,41 @@ module.exports = {
       autorestart: true,
       max_restarts: 10,
       min_uptime: "30s",
+      out_file: `${logDir}/web.log`,
+      error_file: `${logDir}/web.error.log`,
+      merge_logs: true,
+      time: true,
+    },
+
+    // -------------------------------------------------------------------------
+    // Local 모드 — Docker 없이 SQLite + 호스트 worker/web (dev 흐름)
+    // 무거운 인프라(postgres/redis/minio) 미사용. Docker 미설치 환경에서 사용.
+    // -------------------------------------------------------------------------
+    {
+      // local 모드: --workers 1 (no --reload).
+      // 이유: 학습(Stage 7)이 분~시간 단위로 진행. src/ 파일 수정 시 uvicorn --reload가
+      // worker process 죽이면 학습 중단. 안정성 우선.
+      // 백엔드 hot-reload 필요 시 별도 터미널에서 `make dev-worker` foreground 사용.
+      name: "wfp-worker-local",
+      cwd: workerDir,
+      script: "/bin/bash",
+      args: ["-c", workerScriptLocal("--workers 1")],
+      autorestart: true,
+      max_restarts: 10,
+      min_uptime: "10s",
+      out_file: `${logDir}/worker.log`,
+      error_file: `${logDir}/worker.error.log`,
+      merge_logs: true,
+      time: true,
+    },
+    {
+      name: "wfp-web-local",
+      cwd: frontendDir,
+      script: "/bin/bash",
+      args: ["-c", webScript("pnpm dev")],
+      autorestart: true,
+      max_restarts: 10,
+      min_uptime: "10s",
       out_file: `${logDir}/web.log`,
       error_file: `${logDir}/web.error.log`,
       merge_logs: true,

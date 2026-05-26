@@ -7,12 +7,17 @@ SHELL := /bin/bash
 
 # ~/.local/bin을 모든 recipe의 PATH에 추가 (uv/pnpm/pm2 user-local 설치 경로)
 export PATH := $(HOME)/.local/bin:$(PATH)
+
+# PM2 절대 경로 — macOS make가 단순 recipe를 shell 우회로 직접 exec하면 PATH 무시되는 케이스 회피.
+# make-time에 한 번 resolve. 없으면 ~/.local/bin/pm2 fallback.
+PM2 := $(shell command -v pm2 2>/dev/null || echo $(HOME)/.local/bin/pm2)
 .PHONY: help bootstrap dev test lint build clean env-check dev-env-check \
+        install-deps reinstall-worker sync \
         dev-worker dev-web prod-worker prod-web \
         docker-dev docker-dev-cpu docker-dev-gpu \
         docker-prod docker-prod-cpu docker-prod-gpu \
         docker-prod-tls docker-prod-tls-gpu \
-        docker-infra-start docker-dev-via-host docker-prod-via-host \
+        docker-infra-start docker-local-via-host docker-dev-via-host docker-prod-via-host \
         host-deps-check host-down host-restart host-logs host-logs-worker host-logs-web host-status host-monit \
         docker-down docker-logs traefik-diag
 
@@ -118,6 +123,15 @@ env-status: ## 호스트 환경 진단 (OS·GPU 자동 감지 + 누락 패키지
 
 install-deps: ## 호스트 환경 자동 감지 후 학습 패키지 자동 설치
 	cd '$(WORKER_DIR)' && WFP_PROJECT_DIR=$$(pwd) .venv/bin/python -m wfp_worker.env_check --install
+
+reinstall-worker: ## worker venv 재설치 + PM2 재시작 (git pull 후 코드 반영 강제)
+	@echo "→ worker uninstall + reinstall (uv editable는 copy 방식이라 수동 필요)"
+	cd '$(WORKER_DIR)' && "$$HOME/.local/bin/uv" pip uninstall wfp-worker --python .venv/bin/python
+	cd '$(WORKER_DIR)' && "$$HOME/.local/bin/uv" pip install -e ".[dev]" --python .venv/bin/python
+	@echo "✓ worker venv 갱신 완료"
+	@$(MAKE) -s host-restart
+
+sync: reinstall-worker ## git pull 후 worker 재설치 + PM2 재시작 (별칭)
 
 # -----------------------------------------------------------------------------
 # 로컬 호스트 실행 (Docker 없이) — dev/prod 공통 변수로 단일화
@@ -294,16 +308,35 @@ host-deps-check:
 	  cd '$(FRONTEND_DIR)' && (pnpm install --frozen-lockfile || pnpm install); \
 	fi
 
+docker-local-via-host: dev-env-check host-deps-check ## Docker 없이 SQLite + 호스트 worker/web (PM2, 가장 가벼운 모드)
+	@mkdir -p '$(HOST_LOG_DIR)'
+	@echo "→ local 모드: SQLite (~/.wfp/wfp.db) + 호스트 PM2 — Docker 인프라 미사용"
+	@echo "  postgres/redis/minio/mail 모두 미사용. SUPERVISOR_* 만 필요."
+	@echo "→ $(GPU_MSG)"
+	@if [ "$(HAS_GPU)" = "1" ]; then \
+	  echo "  worker는 호스트 PM2 → 호스트 GPU 직접 사용"; \
+	fi
+	@echo "→ PM2로 worker/web 기동 (ecosystem: scripts/ecosystem.config.cjs, local 변형)"
+	@$(PM2_ENV) $(PM2) start '$(PM2_ECO)' --only wfp-worker-local,wfp-web-local --update-env
+	@$(PM2) save --force >/dev/null 2>&1 || true
+	@sleep 2
+	@$(MAKE) host-status
+	@echo ""
+	@echo "✓ local 기동 완료 — Docker 데몬 불필요"
+	@echo "  worker → http://localhost:8000 (DB: SQLite)"
+	@echo "  web    → http://localhost:3000"
+	@echo "  로그: make host-logs / 정지: make host-down"
+
 docker-dev-via-host: docker-infra-start dev-env-check host-deps-check ## 인프라(Docker) + dev-worker/dev-web (PM2 관리)
-	@mkdir -p $(HOST_LOG_DIR)
+	@mkdir -p '$(HOST_LOG_DIR)'
 	@echo "→ $(GPU_MSG)"
 	@if [ "$(HAS_GPU)" = "1" ]; then \
 	  echo "  via-host 모드: worker는 호스트 PM2로 실행 → 호스트 GPU 직접 사용 (compose.*.gpu.yaml 불필요)"; \
 	  echo "  PyTorch CUDA 휠 미설치 시 학습 시 CUDA 비활성. 설치: make install-deps"; \
 	fi
 	@echo "→ PM2로 worker/web 기동 (ecosystem: scripts/ecosystem.config.cjs)"
-	@$(PM2_ENV) pm2 start '$(PM2_ECO)' --only wfp-worker-dev,wfp-web-dev --update-env
-	@pm2 save --force >/dev/null 2>&1 || true
+	@$(PM2_ENV) $(PM2) start '$(PM2_ECO)' --only wfp-worker-dev,wfp-web-dev --update-env
+	@$(PM2) save --force >/dev/null 2>&1 || true
 	@sleep 2
 	@$(MAKE) host-status
 	@echo ""
@@ -313,20 +346,20 @@ docker-dev-via-host: docker-infra-start dev-env-check host-deps-check ## 인프�
 	@echo "  로그: make host-logs / 정지: make host-down"
 
 docker-prod-via-host: docker-infra-start env-check host-deps-check ## 인프라(Docker) + prod-worker/prod-web (PM2 관리, pnpm build 사전)
-	@mkdir -p $(HOST_LOG_DIR)
+	@mkdir -p '$(HOST_LOG_DIR)'
 	@echo "→ $(GPU_MSG)"
 	@if [ "$(HAS_GPU)" = "1" ]; then \
 	  echo "  via-host 모드: worker는 호스트 PM2로 실행 → 호스트 GPU 직접 사용 (compose.*.gpu.yaml 불필요)"; \
 	  echo "  PyTorch CUDA 휠 미설치 시 학습 시 CUDA 비활성. 설치: make install-deps"; \
 	fi
 	@echo "→ web 프로덕션 빌드 (pnpm build, 로그: $(HOST_LOG_DIR)/web-build.log)"
-	@cd '$(FRONTEND_DIR)' && pnpm build > $(HOST_LOG_DIR)/web-build.log 2>&1 || { \
-	  echo "✗ pnpm build 실패. 최근 로그:"; tail -30 $(HOST_LOG_DIR)/web-build.log; exit 1; \
+	@cd '$(FRONTEND_DIR)' && pnpm build > '$(HOST_LOG_DIR)/web-build.log' 2>&1 || { \
+	  echo "✗ pnpm build 실패. 최근 로그:"; tail -30 '$(HOST_LOG_DIR)/web-build.log'; exit 1; \
 	}
 	@echo "✓ web 빌드 성공"
 	@echo "→ PM2로 worker/web 기동 (ecosystem: scripts/ecosystem.config.cjs)"
-	@$(PM2_ENV) pm2 start '$(PM2_ECO)' --only wfp-worker-prod,wfp-web-prod --update-env
-	@pm2 save --force >/dev/null 2>&1 || true
+	@$(PM2_ENV) $(PM2) start '$(PM2_ECO)' --only wfp-worker-prod,wfp-web-prod --update-env
+	@$(PM2) save --force >/dev/null 2>&1 || true
 	@sleep 2
 	@$(MAKE) host-status
 	@echo ""
@@ -341,15 +374,15 @@ host-down: ## PM2 daemon + 좀비 프로세스 + 포트 점유 모두 강제 정
 
 host-restart: ## PM2 프로세스 재시작 (코드 + env 변경 반영)
 	@# PM2 daemon 없으면 list 실패 → 메시지 출력 후 종료
-	@if ! pm2 ping >/dev/null 2>&1; then \
+	@if ! $(PM2) ping >/dev/null 2>&1; then \
 	  echo "✗ PM2 daemon 미실행 — make docker-dev-via-host 또는 docker-prod-via-host 먼저 실행"; \
 	  exit 1; \
 	fi
 	@# 등록된 앱만 대상으로 restart (없는 앱은 조용히 skip)
 	@found=0; \
-	for app in wfp-worker-dev wfp-worker-prod wfp-web-dev wfp-web-prod; do \
-	  if pm2 jlist 2>/dev/null | grep -q "\"name\":\"$$app\""; then \
-	    $(PM2_ENV) pm2 restart $$app --update-env >/dev/null 2>&1 && \
+	for app in wfp-worker-dev wfp-worker-prod wfp-worker-local wfp-web-dev wfp-web-prod wfp-web-local; do \
+	  if $(PM2) jlist 2>/dev/null | grep -q "\"name\":\"$$app\""; then \
+	    $(PM2_ENV) $(PM2) restart $$app --update-env >/dev/null 2>&1 && \
 	      echo "✓ $$app 재시작 (env reload)"; \
 	    found=$$((found+1)); \
 	  fi; \
@@ -359,19 +392,19 @@ host-restart: ## PM2 프로세스 재시작 (코드 + env 변경 반영)
 	fi
 
 host-logs: ## PM2 통합 로그 (worker + web)
-	pm2 logs
+	@bash -c '$(PM2) logs'
 
 host-logs-worker: ## PM2 worker 로그만
-	pm2 logs wfp-worker-dev wfp-worker-prod
+	@bash -c '$(PM2) logs wfp-worker-dev wfp-worker-prod wfp-worker-local'
 
 host-logs-web: ## PM2 web 로그만
-	pm2 logs wfp-web-dev wfp-web-prod
+	@bash -c '$(PM2) logs wfp-web-dev wfp-web-prod wfp-web-local'
 
 host-status: ## PM2 프로세스 상태 (테이블 형식)
-	@pm2 list
+	@bash -c '$(PM2) list'
 
 host-monit: ## PM2 실시간 모니터 (CPU/메모리/로그)
-	pm2 monit
+	@bash -c '$(PM2) monit'
 
 docker-down: ## 모든 모드 정지 — PM2 + 좀비 프로세스 + dev/prod/infra compose (볼륨 유지)
 	@$(MAKE) -s host-down
@@ -399,9 +432,9 @@ docker-clean: ## 전체 정지 + 볼륨 삭제 (주의 — 데이터 손실)
 	@echo "✓ 전체 정지 + 볼륨 삭제 완료"
 
 docker-logs: ## 워커 로그 추적 — via-host(PM2) 자동 감지, 없으면 compose worker
-	@if pm2 jlist 2>/dev/null | grep -q "wfp-worker"; then \
-	  echo "→ PM2 모드 — pm2 logs (host-logs로 가도 동일)"; \
-	  pm2 logs wfp-worker-dev wfp-worker-prod; \
+	@if $(PM2) jlist 2>/dev/null | grep -q "wfp-worker"; then \
+	  echo "→ PM2 모드 — $(PM2) logs (host-logs로 가도 동일)"; \
+	  $(PM2) logs wfp-worker-dev wfp-worker-prod wfp-worker-local; \
 	else \
 	  echo "→ 컨테이너 모드 — docker compose logs"; \
 	  cd docker && $(DC_ENV) docker compose $(DEV_FILES) logs -f worker; \

@@ -5,6 +5,9 @@
 
 set -u
 
+# PATH 보장 — ~/.local/bin (uv/pnpm/pm2 user-local 설치 경로)
+export PATH="$HOME/.local/bin:$PATH"
+
 echo "→ PM2 앱 삭제 + daemon kill (자동 재시작 차단)"
 pm2 delete all 2>/dev/null || true
 pm2 save --force >/dev/null 2>&1 || true

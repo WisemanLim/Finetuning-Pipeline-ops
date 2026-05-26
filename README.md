@@ -483,6 +483,9 @@ make dev-web                # pnpm dev (HMR)
 make prod-worker            # uvicorn workers=1 (.env 자동 로드)
 make prod-web               # pnpm build → pnpm start
 
+# 가장 가벼운 — Docker 없이 SQLite + 호스트 worker/web (PM2)
+make docker-local-via-host  # postgres/redis/minio 미사용. SQLite만. Docker 데몬 불필요.
+
 # 하이브리드 — 인프라(Docker) + worker/web(호스트 PM2 관리)
 make docker-dev-via-host    # docker-infra + PM2 start wfp-worker-dev/wfp-web-dev
 make docker-prod-via-host   # docker-infra + pnpm build + PM2 start wfp-worker-prod/wfp-web-prod
@@ -569,23 +572,22 @@ Makefile은 두 가지를 자동 감지한다:
 
 `make docker-info`로 현재 감지 결과 확인.
 
-### dev/prod 기능 대칭
+### local/dev/prod 기능 대칭
 
-dev와 prod는 동일한 기반 인프라 + 도구 체인을 사용. 차이는 빌드 옵션 / 검증 강도뿐.
+세 모드 모두 동일 코드/도구 체인. 차이는 인프라 의존성 / 빌드 옵션 / 검증 강도.
 
-| 항목 | dev | prod |
-|---|---|---|
-| Worker uvicorn | `--reload` (단일, 핫리로드) | `--workers 1` (단일, 안정) |
-| Web Next.js | `pnpm dev` (HMR) | `pnpm build` 후 `pnpm start` |
-| env-check | `dev-env-check` (SUPERVISOR_* 만) | `env-check` (8개 필수) |
-| Compose 옵션 | direct 포트 노출 (3000/8000 등) | Traefik (PathPrefix 라우팅) + 선택 TLS |
-| Hybrid (PM2) | `make docker-dev-via-host` | `make docker-prod-via-host` |
-| 자동 재시작 | PM2 autorestart, min_uptime=10s | PM2 autorestart, min_uptime=30s |
-| HW 진단 (nvidia-smi fallback) | ✓ 동일 코드 | ✓ |
-| HW 규칙 자동 탐색 | ✓ 동일 코드 | ✓ |
-| WFP-0203 강제 진행 (사용자 동의) | ✓ 동일 | ✓ |
-| GPU 자동 감지 (CPU/GPU compose 선택) | ✓ | ✓ |
-| 잡 spec 모든 step 보존 (재실행 prefill) | ✓ | ✓ |
+| 항목 | local | dev | prod |
+|---|---|---|---|
+| Docker 필요 | **불필요** | 필요 (infra) | 필요 (infra) |
+| DB | SQLite (`~/.wfp/wfp.db`) | PostgreSQL (compose) | PostgreSQL (compose) |
+| 인프라 | 없음 | postgres/redis/minio/mail | postgres/redis/minio/mail |
+| Worker uvicorn | `--reload` | `--reload` | `--workers 1` |
+| Web Next.js | `pnpm dev` | `pnpm dev` | `pnpm build → pnpm start` |
+| env-check | `dev-env-check` | `dev-env-check` | `env-check` (8개 키) |
+| Compose 라우팅 | — | direct 포트 | Traefik (PathPrefix) + 선택 TLS |
+| Hybrid 명령 | `make docker-local-via-host` | `make docker-dev-via-host` | `make docker-prod-via-host` |
+| min_uptime | 10s | 10s | 30s |
+| 공통 자동화 | HW probe (nvidia-smi fallback), HW 규칙 자동 탐색, WFP-0203 강제 진행, GPU 자동 감지, 잡 spec prefill 재실행 — **3 모드 동일 코드** |
 
 ### HW 규칙 (`rules/hw_to_plan.yaml`) 자동 탐색
 
