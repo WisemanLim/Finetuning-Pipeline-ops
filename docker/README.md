@@ -42,6 +42,20 @@ make docker-info     # 현재 감지 결과 출력
 
 ---
 
+## dev/prod 기능 대칭
+
+dev와 prod는 동일 코드/도구 체인. 차이는 빌드 옵션 / 검증 강도 / Traefik 유무.
+
+| 항목 | dev | prod |
+|---|---|---|
+| Worker | `uvicorn --reload` | `uvicorn --workers 1` |
+| Web | `pnpm dev` (HMR) | `pnpm build → pnpm start` |
+| env-check | `dev-env-check` (SUPERVISOR_*만) | `env-check` (8개 키) |
+| Reverse proxy | 직접 포트 (3000/8000) | Traefik (PathPrefix `/ws`→worker, `/`→web) |
+| TLS | — | `compose.prod.tls.yaml` 오버라이드 |
+| PM2 min_uptime | 10s | 30s |
+| 자동화 | HW probe, nvidia-smi fallback, WFP-0203 force, 잡 prefill 재실행 모두 **dev/prod 동일** |
+
 ## 1. 빠른 시작 (개발 환경)
 
 ### 사전 요구사항
@@ -391,7 +405,8 @@ make traefik-diag       # 라우팅 / 라벨 / 네트워크
 make docker-info        # 경로 + GPU 자동 감지
 make docker-logs        # PM2/compose 자동 감지 후 로그
 make host-status        # PM2 프로세스 상태
-make env-check          # docker/.env 필수 키 검증
+make env-check          # docker/.env 필수 키 검증 (prod — 8개 키)
+make dev-env-check      # SUPERVISOR_* 만 검증 (dev — 나머지 compose default)
 ```
 
 ---

@@ -7,7 +7,7 @@ SHELL := /bin/bash
 
 # ~/.local/bin을 모든 recipe의 PATH에 추가 (uv/pnpm/pm2 user-local 설치 경로)
 export PATH := $(HOME)/.local/bin:$(PATH)
-.PHONY: help bootstrap dev test lint build clean env-check \
+.PHONY: help bootstrap dev test lint build clean env-check dev-env-check \
         dev-worker dev-web prod-worker prod-web \
         docker-dev docker-dev-cpu docker-dev-gpu \
         docker-prod docker-prod-cpu docker-prod-gpu \
@@ -177,6 +177,28 @@ build: build-worker build-web ## 전체 이미지 빌드
 # -----------------------------------------------------------------------------
 # Docker Compose
 # -----------------------------------------------------------------------------
+dev-env-check: ## dev용 최소 env 검증 (SUPERVISOR_* 만 필수, 나머지는 compose default)
+	@if [ ! -f docker/.env ]; then \
+	  if [ -f docker/.env.example ]; then \
+	    echo "⚠ docker/.env 없음 → docker/.env.example 복사"; \
+	    cp docker/.env.example docker/.env; \
+	    echo "✗ docker/.env 열어 SUPERVISOR_ID / SUPERVISOR_PASSWORD 설정 후 재실행"; \
+	    exit 1; \
+	  else \
+	    echo "✗ docker/.env 와 docker/.env.example 모두 없음"; exit 1; \
+	  fi; \
+	fi
+	@missing=""; \
+	for k in SUPERVISOR_ID SUPERVISOR_PASSWORD; do \
+	  if ! grep -q "^$$k=" docker/.env || grep -qE "^$$k=$$" docker/.env; then \
+	    missing="$$missing $$k"; \
+	  fi; \
+	done; \
+	if [ -n "$$missing" ]; then \
+	  echo "✗ docker/.env 누락/빈 키 (dev 최소):$$missing"; exit 1; \
+	fi
+	@echo "✓ docker/.env dev 최소 검증 통과 (SUPERVISOR_*)"
+
 env-check: ## docker/.env 존재 + 필수 키 검증
 	@if [ ! -f docker/.env ]; then \
 	  if [ -f docker/.env.example ]; then \
@@ -200,14 +222,14 @@ env-check: ## docker/.env 존재 + 필수 키 검증
 	fi
 	@echo "✓ docker/.env 검증 통과"
 
-docker-dev: env-check ## 개발 스택 기동 (GPU 자동 감지)
+docker-dev: dev-env-check ## 개발 스택 기동 (GPU 자동 감지)
 	@echo "→ $(GPU_MSG)"
 	cd docker && $(DC_ENV) docker compose $(DEV_FILES) up -d --build
 
-docker-dev-cpu: env-check ## 개발 스택 기동 (CPU 강제)
+docker-dev-cpu: dev-env-check ## 개발 스택 기동 (CPU 강제)
 	cd docker && $(DC_ENV) docker compose -f compose.dev.yaml up -d --build
 
-docker-dev-gpu: env-check ## 개발 스택 기동 (GPU 강제 — nvidia 런타임 필요)
+docker-dev-gpu: dev-env-check ## 개발 스택 기동 (GPU 강제 — nvidia 런타임 필요)
 	cd docker && $(DC_ENV) docker compose -f compose.dev.yaml -f compose.dev.gpu.yaml up -d --build
 
 docker-infra-start:
@@ -272,7 +294,7 @@ host-deps-check:
 	  cd '$(FRONTEND_DIR)' && (pnpm install --frozen-lockfile || pnpm install); \
 	fi
 
-docker-dev-via-host: docker-infra-start host-deps-check ## 인프라(Docker) + dev-worker/dev-web (PM2 관리)
+docker-dev-via-host: docker-infra-start dev-env-check host-deps-check ## 인프라(Docker) + dev-worker/dev-web (PM2 관리)
 	@mkdir -p $(HOST_LOG_DIR)
 	@echo "→ PM2로 worker/web 기동 (ecosystem: scripts/ecosystem.config.cjs)"
 	@$(PM2_ENV) pm2 start '$(PM2_ECO)' --only wfp-worker-dev,wfp-web-dev --update-env

@@ -460,7 +460,8 @@ make docker-prod-tls-gpu    # GPU + TLS
 make help                   # 명령 목록
 make bootstrap              # uv + pnpm 의존성 설치
 make docker-info            # 현재 감지된 환경 (경로 + GPU)
-make env-check              # docker/.env 존재 + 필수 키 검증
+make env-check              # docker/.env 8개 필수 키 검증 (prod 엄격)
+make dev-env-check          # SUPERVISOR_* 만 검증 (dev 최소)
 make test                   # Finetuning-Pipeline-worker pytest
 make build                  # Docker 이미지 빌드 (worker + web)
 
@@ -567,6 +568,24 @@ Makefile은 두 가지를 자동 감지한다:
    - macOS / 드라이버 미설치 → 자동 CPU 모드
 
 `make docker-info`로 현재 감지 결과 확인.
+
+### dev/prod 기능 대칭
+
+dev와 prod는 동일한 기반 인프라 + 도구 체인을 사용. 차이는 빌드 옵션 / 검증 강도뿐.
+
+| 항목 | dev | prod |
+|---|---|---|
+| Worker uvicorn | `--reload` (단일, 핫리로드) | `--workers 1` (단일, 안정) |
+| Web Next.js | `pnpm dev` (HMR) | `pnpm build` 후 `pnpm start` |
+| env-check | `dev-env-check` (SUPERVISOR_* 만) | `env-check` (8개 필수) |
+| Compose 옵션 | direct 포트 노출 (3000/8000 등) | Traefik (PathPrefix 라우팅) + 선택 TLS |
+| Hybrid (PM2) | `make docker-dev-via-host` | `make docker-prod-via-host` |
+| 자동 재시작 | PM2 autorestart, min_uptime=10s | PM2 autorestart, min_uptime=30s |
+| HW 진단 (nvidia-smi fallback) | ✓ 동일 코드 | ✓ |
+| HW 규칙 자동 탐색 | ✓ 동일 코드 | ✓ |
+| WFP-0203 강제 진행 (사용자 동의) | ✓ 동일 | ✓ |
+| GPU 자동 감지 (CPU/GPU compose 선택) | ✓ | ✓ |
+| 잡 spec 모든 step 보존 (재실행 prefill) | ✓ | ✓ |
 
 ### HW 규칙 (`rules/hw_to_plan.yaml`) 자동 탐색
 
