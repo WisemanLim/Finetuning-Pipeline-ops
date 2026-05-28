@@ -738,6 +738,21 @@ PM2 환경에서 nvidia-smi PATH 보장 — `ecosystem.config.cjs`가 `/usr/bin`
 - `(admin)/layout.tsx` → `<AuthGuard requireAdmin>` 적용. ADMIN 미달 시 403 안내.
 - `lib/api.ts` `request()` 의 401 처리 — `hadToken` 게이트 제거 후 항상 리다이렉트 (login/signup/marketing 경로는 무한 루프 방지로 제외).
 
+### WebSocket 운영 설정 (NEW)
+
+브라우저는 worker `/ws/{job_id}` 에 **직접** 연결한다. Next.js 는 HTTP proxy 만 함.
+
+`docker/.env` (또는 `frontend/.env`) 의 `NEXT_PUBLIC_WS_BASE` / `NEXT_PUBLIC_WORKER_WS_PORT` 로 명시. **빌드 타임 inline** 이라 값 변경 시 frontend 재빌드 필요.
+
+| 운영 형태 | .env 값 | 비고 |
+|---|---|---|
+| Traefik IP 운영 (`compose.prod`) | `NEXT_PUBLIC_WS_BASE=ws://<IP>` | compose 에 이미 `/ws` PathPrefix 라벨 있음 |
+| Traefik 도메인 + TLS (`compose.prod.tls`) | `NEXT_PUBLIC_WS_BASE=wss://<domain>` | `DOMAIN`/`ACME_EMAIL` 도 설정 |
+| PM2 직접 (`:3000` Next + `:8000` worker 노출) | 비워둠 (자동) | 호스트 방화벽 8000 열기 |
+| 로컬 dev | 비워둠 | `ws://localhost:8000` 자동 |
+
+증상: WS 끊김 + 잡 상세에서 진행률 / 손실 그래프 미갱신 → 우선 콘솔에서 WS URL 점검.
+
 ### tqdm → WebSocket 브리지
 
 - Worker `common/tqdm_bridge.py` — `tqdm.std.tqdm` monkey-patch. transformers/datasets/huggingface_hub 등 외부 라이브러리의 stdout tqdm 이 WS 이벤트로 자동 흐름.
