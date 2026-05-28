@@ -12,7 +12,7 @@ export PATH := $(HOME)/.local/bin:$(PATH)
 # make-time에 한 번 resolve. 없으면 ~/.local/bin/pm2 fallback.
 PM2 := $(shell command -v pm2 2>/dev/null || echo $(HOME)/.local/bin/pm2)
 .PHONY: help bootstrap dev test lint build clean env-check dev-env-check \
-        install-deps reinstall-worker sync \
+        install-deps reinstall-worker sync worker-editable \
         dev-worker dev-web prod-worker prod-web \
         docker-dev docker-dev-cpu docker-dev-gpu \
         docker-prod docker-prod-cpu docker-prod-gpu \
@@ -142,10 +142,22 @@ sync: reinstall-worker ## git pull 후 worker 재설치 + PM2 재시작 (별칭)
 WORKER_UVICORN_DEV  := .venv/bin/uvicorn wfp_worker.server:app --host 0.0.0.0 --port 8000 --reload
 WORKER_UVICORN_PROD := .venv/bin/uvicorn wfp_worker.server:app --host 0.0.0.0 --port 8000 --workers 1
 
-dev-worker: ## Finetuning-Pipeline-worker dev 서버 (uvicorn --reload, .env 자동 로드, foreground)
+worker-editable: ## wfp_worker editable install 보장 (코드 변경 즉시 반영, idempotent)
+	@cd '$(WORKER_DIR)' && \
+	  UV_BIN="$$( [ -x .venv/bin/uv ] && echo .venv/bin/uv || command -v uv 2>/dev/null )"; \
+	  if [ -n "$$UV_BIN" ]; then \
+	    "$$UV_BIN" pip install -e . --no-deps --quiet --python .venv/bin/python && \
+	    echo "✓ wfp_worker editable install OK"; \
+	  else \
+	    echo "⚠ uv 미설치 — wfp_worker editable install 건너뜀."; \
+	    echo "  코드 변경이 site-packages 에 반영 안 될 수 있음. uv 설치 권장:"; \
+	    echo "    curl -LsSf https://astral.sh/uv/install.sh | sh"; \
+	  fi
+
+dev-worker: worker-editable ## Finetuning-Pipeline-worker dev 서버 (uvicorn --reload, .env 자동 로드, foreground)
 	cd '$(WORKER_DIR)' && bash -c 'set -a; [ -f .env ] && source .env; set +a; exec $(WORKER_UVICORN_DEV)'
 
-prod-worker: ## Finetuning-Pipeline-worker prod 서버 (uvicorn workers=1, .env 자동 로드, foreground)
+prod-worker: worker-editable ## Finetuning-Pipeline-worker prod 서버 (uvicorn workers=1, .env 자동 로드, foreground)
 	cd '$(WORKER_DIR)' && bash -c 'set -a; [ -f .env ] && source .env; set +a; exec $(WORKER_UVICORN_PROD)'
 
 dev-web: ## Finetuning-Pipeline-frontend dev 서버 (pnpm dev, foreground)

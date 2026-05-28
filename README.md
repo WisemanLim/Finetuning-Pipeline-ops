@@ -769,4 +769,35 @@ PM2 환경에서 nvidia-smi PATH 보장 — `ecosystem.config.cjs`가 `/usr/bin`
 - `uvicorn --reload` 가 worker 코드 편집 시 재시작 → 진행 중이던 잡 메모리에서 잃음. 운영 배포는 reload 없이.
 - **prod 워커 코드 변경 후 반드시 `pm2 restart wfp-worker-prod`** — `--reload` 없는 prod 는 자동 적용 안 됨. 미반영 시 신규 라우트 404 (`{"detail":"Not Found"}`) 발생.
   - 검증: `curl -s http://localhost:8000/openapi.json | jq '.paths | keys[] | select(contains("data/raw"))'` 로 신규 라우트 활성 확인.
+- **wfp_worker editable install 확인** — `.venv` 에 일반 설치(`pip install .`) 되어 있으면 코드 변경이 site-packages 사본에만 머물고 실제 src/ 가 반영 안 됨. 증상: PM2 재시작해도 새 라우트 404.
+  - 검증: `.venv/bin/python -c "import wfp_worker; print(wfp_worker.__path__)"` → src/ 경로 출력되어야 정상.
+  - 복구: `uv pip install -e . --no-deps --force-reinstall --python .venv/bin/python` 후 PM2 재시작.
+  - 자동화: `make dev-worker` / `make prod-worker` 는 `worker-editable` 타깃 통해 idempotent 보장.
 - `allow-all` 화이트리스트는 시드 편의용. 운영 전 도메인 좁힐 것.
+
+### 운영 배포 절차 (요약)
+
+코드 갱신 + 재기동 권장 순서:
+
+```bash
+# 1. 코드 동기화
+cd <worker_dir> && git pull
+cd <frontend_dir> && git pull
+
+# 2. worker editable 재설치 + PM2 재시작 (자동화)
+make -C <ops_dir> reinstall-worker
+# 또는 수동:
+#   uv pip install -e . --no-deps --force-reinstall --python .venv/bin/python
+#   pm2 restart wfp-worker-prod
+
+# 3. frontend 빌드 + PM2 재시작
+cd <frontend_dir>
+pnpm install
+pnpm build
+pm2 restart wfp-web-prod
+
+# 4. 검증
+pm2 status
+curl -s http://localhost:8000/openapi.json | grep -o '"/jobs/{job_id}/data/raw"'
+curl -s http://localhost:8000/health
+```
