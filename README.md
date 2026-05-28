@@ -698,3 +698,48 @@ PM2 환경에서 nvidia-smi PATH 보장 — `ecosystem.config.cjs`가 `/usr/bin`
 4. CLA 서명 (필요 시)
 
 문의: bclim@edentns.com (Wiseman)
+
+---
+
+## 최근 변경 (2026-05)
+
+### Worker 신규 엔드포인트
+
+| Method | Path | 권한 | 비고 |
+|---|---|---|---|
+| `GET`  | `/jobs/{id}/data/raw`           | 소유자/admin | Stage 5 수집 raw JSONL 다운로드 |
+| `POST` | `/jobs/{id}/advance`            | 소유자/admin | 멈춘 stage 스킵 + 다음 stage 재실행 |
+| `POST` | `/jobs/{id}/finalize`           | 소유자/admin | 현재까지 산출물로 DONE 마킹 |
+| `GET`  | `/admin/hf-search?q=...`        | admin | HF Hub 모델 검색 보조 (자동완성) |
+| `POST` | `/admin/catalog/seed-defaults`  | admin | _ALL_MODELS / PRD §3.2 프리셋 / allow-all 일괄 시드 |
+
+### 파이프라인 리팩토링 (Worker)
+
+- `_run_pipeline` 을 stage 별 함수로 분해. `start_stage` 파라미터로 임의 위치부터 재진입 가능. advance 기능 기반.
+- 학습/평가 진행 콜백 thread-safe 수정 (`run_coroutine_threadsafe`). 이전엔 워커 스레드 step 이벤트 무음 드롭.
+- Stage 8 (평가) 추론 루프에 step 이벤트 추가. 사용자가 평가 진행 가시화.
+
+### 프론트 잡 페이지
+
+- **tqdm 스타일 진행 라인** — 학습/평가 step 진행을 모노스페이스 한 줄로 표시.
+- **"수집 데이터" 다운로드 버튼** — Stage 5 이후 raw JSONL 다운로드.
+- **"작업 계속" / "조기 종료" 버튼** — RUNNING/EVAL 상태 상시 노출. 5분 무이벤트 시 빨간 "멈춤 감지" 배지로 강조.
+
+### 프론트 카탈로그 관리 (admin)
+
+- 모델 / 카테고리 프리셋 / 도메인 화이트리스트 — 실제 CRUD 와이어업.
+- HF Hub 검색 자동완성 모달.
+- "기본값 가져오기" 원클릭 시드.
+
+### 인증/권한 강화 (Frontend)
+
+- **`<AuthGuard>` 클라이언트 가드 신규** — JWT 가 localStorage 기반이라 Next 미들웨어 검증 불가. 레이아웃에서 토큰 + `/auth/me` 검증.
+- `(app)/layout.tsx` → `<AuthGuard>` 적용. 미로그인 시 `/login` 리다이렉트.
+- `(admin)/layout.tsx` → `<AuthGuard requireAdmin>` 적용. ADMIN 미달 시 403 안내.
+- `lib/api.ts` `request()` 의 401 처리 — `hadToken` 게이트 제거 후 항상 리다이렉트 (login/signup/marketing 경로는 무한 루프 방지로 제외).
+
+### 운영 메모
+
+- PM2 데몬이 백그라운드에 살아 있으면 `wfp-worker` 가 자동 재시작 → `make dev-worker` 시 port 8000 충돌 가능. `~/.pm2/dump.pm2` 확인하거나 `pm2 list` / `pm2 delete <name>` 로 정리.
+- `uvicorn --reload` 가 worker 코드 편집 시 재시작 → 진행 중이던 잡 메모리에서 잃음. 운영 배포는 reload 없이.
+- `allow-all` 화이트리스트는 시드 편의용. 운영 전 도메인 좁힐 것.
