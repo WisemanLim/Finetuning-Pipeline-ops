@@ -500,6 +500,13 @@ make host-down              # pm2 delete all + pm2 kill (daemon) + 포트 8000/3
 # 인프라만
 make docker-infra           # postgres/redis/minio/mailhog (별도 터미널에서 dev-worker/dev-web 수동)
 
+# 카탈로그 운영
+make catalog-refresh        # Worker 카탈로그/프리셋 자동 갱신 (HF Hub trending 기반)
+                            #   - 신규 모델 INSERT (라이선스 safelist + 다운로드 임계 통과만)
+                            #   - 기존 모델 행은 운영자 편집 보존 (수정 안 함)
+                            #   - KSIC 섹션별 프리셋 추천 모델 재계산
+                            #   - cron 등록 친화 (JSON summary stdout)
+
 # 관리
 make docker-logs            # 워커 로그 추적
 make docker-ps              # 컨테이너 상태
@@ -712,6 +719,7 @@ PM2 환경에서 nvidia-smi PATH 보장 — `ecosystem.config.cjs`가 `/usr/bin`
 | `POST` | `/jobs/{id}/finalize`           | 소유자/admin | 현재까지 산출물로 DONE 마킹 |
 | `GET`  | `/admin/hf-search?q=...`        | admin | HF Hub 모델 검색 보조 (자동완성) |
 | `POST` | `/admin/catalog/seed-defaults`  | admin | _ALL_MODELS / PRD §3.2 프리셋 / allow-all 일괄 시드 |
+| `POST` | `/admin/catalog/auto-refresh`   | admin | HF Hub trending + KSIC 휴리스틱 매핑으로 모델/프리셋 자동 갱신. CLI 동등: `make catalog-refresh` |
 
 ### 파이프라인 리팩토링 (Worker)
 
@@ -730,6 +738,31 @@ PM2 환경에서 nvidia-smi PATH 보장 — `ecosystem.config.cjs`가 `/usr/bin`
 - 모델 / 카테고리 프리셋 / 도메인 화이트리스트 — 실제 CRUD 와이어업.
 - HF Hub 검색 자동완성 모달.
 - "기본값 가져오기" 원클릭 시드.
+- "자동 갱신" 원클릭 — HF Hub trending + KSIC 휴리스틱으로 신규 모델 INSERT + 프리셋 재계산. 기존 모델 행은 운영자 편집 보존. cron 친화 CLI 동등 명령 `make catalog-refresh`.
+
+### 카탈로그 자동 갱신 (admin_tools)
+
+운영 중 모델 풀과 카테고리 프리셋 자동 보강. Worker `src/wfp_worker/admin_tools/catalog_refresher.py`.
+
+- **소스**: HuggingFace Hub trending (`HfApi.list_models`, sort=downloads).
+- **필터**: 라이선스 safelist (apache-2.0 / mit / llama2 / llama3 / gemma / deepseek / bsd-3-clause) + 다운로드 ≥500 + params 0.5–70B.
+- **태그 추정**: HF tags + repo 이름에서 `code` / `medical` / `finance` / `general` 자동 추정. Korean-friendly vendor(Qwen, Llama-3 등)는 `ko` 자동 부여.
+- **모델 INSERT 전용**: 기존 hf_repo 행은 절대 수정 안 함 (운영자 편집 보존). soft-deleted 행 그대로.
+- **프리셋 재계산**: 9개 KSIC 섹션(C/F/G/I/J/K/M/P/Q)별로 활성 카탈로그 + 섹션 태그 매칭으로 추천 모델 최대 5건 산정. `task_type`/`description`은 비어있을 때만 채움.
+
+호출:
+
+```bash
+# 1. 관리자 화면 — 카탈로그 페이지의 '자동 갱신' 버튼
+# 2. REST
+curl -X POST http://localhost:8000/admin/catalog/auto-refresh \
+  -H "Authorization: Bearer $TOKEN"
+# 3. CLI / cron
+make catalog-refresh
+```
+
+응답 schema (JSON):
+`{models_added, models_skipped, presets_added, presets_updated, presets_unchanged, hf_search_errors, queries_run}`.
 
 ### 인증/권한 강화 (Frontend)
 

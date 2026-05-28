@@ -14,6 +14,7 @@ PM2 := $(shell command -v pm2 2>/dev/null || echo $(HOME)/.local/bin/pm2)
 .PHONY: help bootstrap dev test lint build clean env-check dev-env-check \
         install-deps reinstall-worker sync worker-editable \
         dev-worker dev-web prod-worker prod-web \
+        catalog-refresh \
         docker-dev docker-dev-cpu docker-dev-gpu \
         docker-prod docker-prod-cpu docker-prod-gpu \
         docker-prod-tls docker-prod-tls-gpu \
@@ -185,6 +186,12 @@ lint: ## ruff + eslint
 typecheck: ## mypy + tsc
 	cd '$(WORKER_DIR)' && .venv/bin/mypy src/
 	cd '$(FRONTEND_DIR)' && pnpm typecheck
+
+# -----------------------------------------------------------------------------
+# 카탈로그 운영 (Worker admin_tools)
+# -----------------------------------------------------------------------------
+catalog-refresh: ## Worker 카탈로그/프리셋 자동 갱신 (HF Hub trending 기반)
+	cd '$(WORKER_DIR)' && .venv/bin/python -m wfp_worker.admin_tools.refresh_cli
 
 # -----------------------------------------------------------------------------
 # 빌드
