@@ -738,8 +738,20 @@ PM2 환경에서 nvidia-smi PATH 보장 — `ecosystem.config.cjs`가 `/usr/bin`
 - `(admin)/layout.tsx` → `<AuthGuard requireAdmin>` 적용. ADMIN 미달 시 403 안내.
 - `lib/api.ts` `request()` 의 401 처리 — `hadToken` 게이트 제거 후 항상 리다이렉트 (login/signup/marketing 경로는 무한 루프 방지로 제외).
 
+### tqdm → WebSocket 브리지
+
+- Worker `common/tqdm_bridge.py` — `tqdm.std.tqdm` monkey-patch. transformers/datasets/huggingface_hub 등 외부 라이브러리의 stdout tqdm 이 WS 이벤트로 자동 흐름.
+- 잡 컨텍스트는 `contextvars` 로 stage 별 자동 전달 (`asyncio.to_thread` context propagation 활용).
+- Frontend tqdm 라인은 stage 무관, `tqdm_desc` 가 prefix 로 표시:
+  - `Loading weights  37%|███▋    | 124/338 [00:10<00:08, 24.15it/s]`
+  - `Map  100%|███████| 308/308 ...`
+  - `Step 240/250  96%|...` (학습)
+- install 시점: `server.py` dotenv 직후 (transformers import 전 보장).
+
 ### 운영 메모
 
 - PM2 데몬이 백그라운드에 살아 있으면 `wfp-worker` 가 자동 재시작 → `make dev-worker` 시 port 8000 충돌 가능. `~/.pm2/dump.pm2` 확인하거나 `pm2 list` / `pm2 delete <name>` 로 정리.
 - `uvicorn --reload` 가 worker 코드 편집 시 재시작 → 진행 중이던 잡 메모리에서 잃음. 운영 배포는 reload 없이.
+- **prod 워커 코드 변경 후 반드시 `pm2 restart wfp-worker-prod`** — `--reload` 없는 prod 는 자동 적용 안 됨. 미반영 시 신규 라우트 404 (`{"detail":"Not Found"}`) 발생.
+  - 검증: `curl -s http://localhost:8000/openapi.json | jq '.paths | keys[] | select(contains("data/raw"))'` 로 신규 라우트 활성 확인.
 - `allow-all` 화이트리스트는 시드 편의용. 운영 전 도메인 좁힐 것.
