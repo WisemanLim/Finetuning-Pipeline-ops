@@ -1,6 +1,11 @@
 # WFP 관리자 기능 — 확인 가이드
 
+**한국어** | [English](./ADMIN-README.en.md)
+
 PRD §10 관리자 기능이 구현된 백엔드 엔드포인트 + 일부 프론트엔드 UI를 활용해 관리자 권한을 검증하는 절차.
+
+> WFP 는 via-host 만 지원 — worker/web 은 호스트 PM2 실행. 로그/재시작은 `make logs-worker` / `make restart`.
+> 운영 가이드는 [상위 README](README.md) ([EN](README.en.md)).
 
 ---
 
@@ -32,7 +37,7 @@ SUPERVISOR_PASSWORD=replace-with-strong-password
 확인:
 
 ```bash
-docker compose -f docker/compose.prod.yaml logs worker | grep supervisor_created
+make logs-worker | grep supervisor_created
 # → {"msg":"supervisor_created","extra":{"email":"admin@..."}}
 ```
 
@@ -156,7 +161,7 @@ PRD §10.3 정책:
 - 디스크 사용량 임계치 초과 시 오래된 체크포인트부터 회수
 - 일정 기간 미접속 사용자 아티팩트 → soft-delete
 
-**자동:** `compose.dev.yaml`의 `reaper` 사이드카가 30분마다 `scripts/reaper.py` 실행.
+**자동:** 호스트 cron 으로 `scripts/reaper.py` 주기 실행 (compose 사이드카 제거 — via-host).
 
 **수동 트리거 (관리자):**
 
@@ -398,7 +403,7 @@ curl -s -H "$H" "$SERVER/admin/audit?actor_email=$ADMIN_EMAIL" \
 
 | 증상 | 원인 | 해결 |
 |---|---|---|
-| 로그인 401 | `SUPERVISOR_PASSWORD` 미설정 또는 오타 | `.env` 확인 후 `docker compose restart worker` |
+| 로그인 401 | `SUPERVISOR_PASSWORD` 미설정 또는 오타 | `docker/.env` 확인 후 `make restart` |
 | `/admin/*` 403 | 일반 USER 토큰으로 호출 | supervisor 계정으로 다시 로그인 |
 | 사이드바에 관리자 메뉴 없음 | 프론트엔드 빌드 캐시 또는 권한 미반영 | 재로그인 → 토큰 클레임의 `role: "ADMIN"` 확인 |
 | 새 admin 계정 만들고 싶음 | `signup`은 항상 USER | supervisor로 로그인 → `PATCH /admin/users/<id>` `{"role":"ADMIN"}` |
@@ -410,6 +415,6 @@ curl -s -H "$H" "$SERVER/admin/audit?actor_email=$ADMIN_EMAIL" \
 ## 7. 참조
 
 - 백엔드 구현: [`../Finetuning-Pipeline-worker/src/wfp_worker/api/admin.py`](../Finetuning-Pipeline-worker/src/wfp_worker/api/admin.py)
-- 프론트엔드 페이지: [`../Finetuning-Pipeline-frontend/app/(admin)/`](../Finetuning-Pipeline-frontend/app/(admin)/)
+- 프론트엔드 페이지: [`../Finetuning-Pipeline-frontend/app/(admin)/`](../Finetuning-Pipeline-frontend/app/\(admin\)/)
 - PRD §10 명세: [.doc/PRD.md](.doc/PRD.md) (§10 관리자 기능)
-- API 요약: [README.md §4 Finetuning-Pipeline-worker REST 요약](README.md)
+- worker API / admin 엔드포인트 요약: [../Finetuning-Pipeline-worker/README.md](../Finetuning-Pipeline-worker/README.md)
