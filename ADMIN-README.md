@@ -235,6 +235,57 @@ curl -X DELETE -H "Authorization: Bearer $TOKEN" \
   http://<서버>/admin/catalog/models/<id>
 ```
 
+**모델 포맷 (multi-format) — safetensors 외 업로드:**
+
+업로드 모델은 `model_format` 으로 분류된다(safetensors / gguf / mlx / pytorch / onnx / other).
+파일 업로드 시 `model_format=auto` (기본) 면 확장자로 자동 감지한다.
+
+- `safetensors` (+ HF/finetuned): 파인튜닝 **베이스로 사용 가능** (위자드 Step 2 노출).
+- `gguf` / `mlx` / `pytorch` / `onnx`: **추론·배포 전용**. 위자드 모델 목록(`/models`)에서 제외되며,
+  카탈로그에는 "추론 전용" 으로 표시. 다운로드/재배포만 가능.
+
+```bash
+# 비-safetensors 모델 업로드 (예: gguf). multipart, model_format 명시.
+curl -X POST -H "Authorization: Bearer $TOKEN" \
+  -F "hf_repo=myorg/llama-q4" -F "params_b=3.2" -F "model_format=gguf" \
+  -F "files=@./llama-3b.Q4_K_M.gguf" \
+  http://<서버>/admin/catalog/models/upload
+
+# 업로드/파인튜닝 모델 파일 다운로드 (local_path → zip)
+curl -OJ -H "Authorization: Bearer $TOKEN" \
+  http://<서버>/admin/catalog/models/<id>/download-files
+```
+
+#### A-2. 파인튜닝 완료 모델 — 변환 후 다운로드 (on-demand)
+
+학습 완료(state=DONE) 잡은 어댑터 외에 다른 포맷으로 변환해 받을 수 있다.
+변환은 비동기로 실행되며, merged(병합 safetensors)를 선행 생성한 뒤 진행한다.
+
+| 포맷 | 도구 | 비고 |
+|------|------|------|
+| `merged` | torch+transformers+peft | 베이스+어댑터 병합 (다른 포맷의 선행) |
+| `gguf` | llama.cpp | quant: Q4_K_M(기본)/Q5_K_M/Q6_K/q8_0/f16 |
+| `mlx` | mlx-lm | Apple Silicon |
+| `pytorch` | torch+safetensors | `.bin` state_dict |
+| `onnx` | optimum[exporters]+onnx | |
+
+```bash
+# 변환 도구 가용성 + 진행 상태
+curl -H "Authorization: Bearer $TOKEN" http://<서버>/jobs/<job_id>/convert/status | jq
+
+# 변환 시작 (예: gguf Q4_K_M)
+curl -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"format":"gguf","quant":"Q4_K_M"}' http://<서버>/jobs/<job_id>/convert
+
+# 완료 후 다운로드 (기존 아티팩트 엔드포인트 재사용)
+curl -OJ -H "Authorization: Bearer $TOKEN" http://<서버>/jobs/<job_id>/artifacts/gguf
+```
+
+**도구 설치:** `make install-convert-tools` (mlx-lm/onnx/optimum + llama.cpp clone).
+`make bootstrap` 에 포함됨. GGUF 양자화 바이너리(`llama-quantize`)는 별도 빌드 필요 —
+미설치 시 f16 GGUF 로 폴백. `docker/.env` 의 `WFP_LLAMA_CPP_DIR` 로 경로 지정.
+프론트엔드: 잡 아티팩트 페이지(`/jobs/<id>/artifacts`) "변환 후 다운로드" 패널.
+
 #### B. 데이터 소스 화이트리스트 (`/admin/data-sources`) — UI 미구현
 
 ```bash
@@ -334,7 +385,9 @@ curl -H "Authorization: Bearer $TOKEN" \
 | 10.2 잡 상세 / 강제 취소 | `/admin/jobs/<id>` | (페이지 미구현, API ✓) |
 | 10.2 우선순위 변경 | — | 백엔드만 (`PATCH /admin/jobs/<id>/priority`) |
 | 10.3 Reaper 수동 트리거 | — | 백엔드만 (`POST /admin/reaper/run`) |
-| 10.4 모델 카탈로그 CRUD | `/admin/catalog` | ✓ UI 존재 |
+| 10.4 모델 카탈로그 CRUD | `/admin/catalog` | ✓ UI 존재 (포맷 배지 + 파일 다운로드) |
+| 10.4 multi-format 업로드 (gguf/mlx/…) | `/admin/catalog` | ✓ 업로드 다이얼로그 포맷 선택 |
+| 파인튜닝 후 변환 후 다운로드 | `/jobs/<id>/artifacts` | ✓ "변환 후 다운로드" 패널 |
 | 10.4 데이터 소스 화이트리스트 | — | 백엔드만 (`/admin/data-sources`) |
 | 10.4 카테고리/프리셋 | — | 백엔드만 (`/admin/presets`) |
 | 10.5 감사 로그 | `/admin/audit` | ✓ UI 존재 |

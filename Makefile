@@ -20,8 +20,9 @@ export PATH := $(HOME)/.local/bin:$(PATH)
 
 PM2 := $(shell command -v pm2 2>/dev/null || echo $(HOME)/.local/bin/pm2)
 
-.PHONY: help bootstrap env-status install-deps reinstall-worker sync worker-editable \
+.PHONY: help bootstrap env-status install-deps install-convert-tools reinstall-worker sync worker-editable \
         dev prod local down restart logs logs-worker logs-web status monit info \
+        deploy pull redeploy \
         dev-worker dev-web prod-worker prod-web \
         test test-cov lint typecheck ci clean \
         catalog-refresh \
@@ -64,7 +65,7 @@ help: ## 명령 목록
 	@echo ""
 	@echo "Wise Fine-tuning Pipeline — 단순화 Makefile (via-host 기본)"
 	@echo ""
-	@grep -E '^(help|info|dev|prod|local|down):.*?## .*$$' $(MAKEFILE_LIST) | sort | \
+	@grep -E '^(help|info|dev|prod|local|down|deploy|pull):.*?## .*$$' $(MAKEFILE_LIST) | sort | \
 	  awk 'BEGIN {FS = ":.*?## "}; {printf "    \033[36m%-26s\033[0m %s\n", $$1, $$2}'
 	@echo ""
 
@@ -117,6 +118,8 @@ bootstrap: ## 전체 의존성 설치 (uv + pnpm + pm2, user-local — sudo 불�
 	  "$$HOME/.local/bin/uv" pip install -e ".[dev]" --python .venv/bin/python
 	@echo "→ Finetuning-Pipeline-frontend (Node 20 + pnpm)"
 	@cd '$(FRONTEND_DIR)' && "$$HOME/.local/bin/pnpm" install
+	@echo "→ 모델 변환 도구 (mlx-lm/onnx/optimum + llama.cpp)"
+	-@$(MAKE) -s -C '$(MAKEFILE_DIR)' install-convert-tools
 	@echo "✓ bootstrap 완료"
 	-@$(MAKE) env-status
 
@@ -128,6 +131,27 @@ env-status-json: ## 환경 진단 JSON 출력 (CI용)
 
 install-deps: ## 학습 패키지 자동 설치 (torch / transformers 등 환경별)
 	cd '$(WORKER_DIR)' && WFP_PROJECT_DIR=$$(pwd) .venv/bin/python -m wfp_worker.env_check --install
+
+install-convert-tools: ## 모델 변환 도구 설치 (mlx-lm/onnx/optimum + llama.cpp clone)
+	@echo "→ Python 변환 패키지 (wfp-worker[convert])"
+	@cd '$(WORKER_DIR)' && "$$HOME/.local/bin/uv" pip install -e ".[convert]" --python .venv/bin/python || \
+	  echo "⚠  일부 변환 패키지 설치 실패 (mlx-lm 은 Apple Silicon 전용)"
+	@LLAMA_DIR="$(WORKER_DIR)/.tools/llama.cpp"; \
+	if [ ! -d "$$LLAMA_DIR/.git" ]; then \
+	  echo "→ llama.cpp clone → $$LLAMA_DIR"; \
+	  git clone --depth 1 https://github.com/ggerganov/llama.cpp "$$LLAMA_DIR" || \
+	    { echo "⚠  llama.cpp clone 실패 — GGUF 변환 비활성"; exit 0; }; \
+	else \
+	  echo "→ llama.cpp 이미 존재 ($$LLAMA_DIR) — git pull"; \
+	  git -C "$$LLAMA_DIR" pull --ff-only || true; \
+	fi; \
+	echo "→ llama.cpp convert 의존성 설치"; \
+	cd '$(WORKER_DIR)' && "$$HOME/.local/bin/uv" pip install -r "$$LLAMA_DIR/requirements.txt" --python .venv/bin/python || true; \
+	echo ""; \
+	echo "✓ 변환 도구 준비. GGUF 양자화(llama-quantize)까지 쓰려면 빌드 필요:"; \
+	echo "   cmake -B $$LLAMA_DIR/build $$LLAMA_DIR && cmake --build $$LLAMA_DIR/build -j --target llama-quantize"; \
+	echo "  docker/.env 에 다음 추가 후 make restart:"; \
+	echo "   WFP_LLAMA_CPP_DIR=$$LLAMA_DIR"
 
 reinstall-worker: ## worker venv 재설치 + PM2 재시작 (git pull 후 강제 반영)
 	@echo "→ worker uninstall + reinstall"
@@ -146,6 +170,49 @@ worker-editable: ## worker editable 보장 (idempotent)
 	  else \
 	    echo "⚠ uv 미설치 — editable 건너뜀"; \
 	  fi
+
+# =============================================================================
+# 배포 — 두 레포(worker + web) 변경을 호스트 PM2 에 한 번에 반영
+#   worker/web 둘 다 손대는 변경(예: 새 API + UI)을 한 명령으로 배포.
+#   GIT_PULL=0 으로 pull 생략 (커밋 전 로컬 편집만 반영할 때).
+#   실행 중인 모드(prod/dev/local)를 자동 감지 — prod web 이면 pnpm build 수행.
+# =============================================================================
+GIT_PULL ?= 1
+
+pull: ## worker + web 각각 git pull (변경사항 있으면 건너뜀)
+	@for d in '$(WORKER_DIR)' '$(FRONTEND_DIR)'; do \
+	  if [ -d "$$d/.git" ]; then \
+	    if [ -n "$$(cd "$$d" && git status --porcelain)" ]; then \
+	      echo "⚠  $$d 로컬 변경 있음 — git pull 건너뜀 (커밋/스태시 후 재실행)"; \
+	    else \
+	      echo "→ $$d git pull --ff-only"; \
+	      (cd "$$d" && git pull --ff-only) || echo "✗ $$d pull 실패 (수동 확인)"; \
+	    fi; \
+	  fi; \
+	done
+
+deploy: host-deps-check ## 두 레포 변경 반영: worker 재설치 + web 빌드 + PM2 재시작 (GIT_PULL=0 로 pull 생략)
+	@mkdir -p '$(HOST_LOG_DIR)'
+	@if [ "$(GIT_PULL)" = "1" ]; then $(MAKE) -s pull; else echo "→ GIT_PULL=0 — git pull 생략 (로컬 편집 반영)"; fi
+	@echo "→ worker editable 재설치 (Python 코드 반영)"
+	@cd '$(WORKER_DIR)' && "$$HOME/.local/bin/uv" pip install -e ".[dev]" --python .venv/bin/python --quiet
+	@echo "→ web 의존성 동기화"
+	@cd '$(FRONTEND_DIR)' && (pnpm install --frozen-lockfile || pnpm install)
+	@if $(PM2) jlist 2>/dev/null | grep -q '"name":"wfp-web-prod"'; then \
+	  echo "→ prod web 감지 — pnpm build ($(HOST_LOG_DIR)/web-build.log)"; \
+	  cd '$(FRONTEND_DIR)' && pnpm build > '$(HOST_LOG_DIR)/web-build.log' 2>&1 || { \
+	    echo "✗ web 빌드 실패. 최근 로그:"; tail -30 '$(HOST_LOG_DIR)/web-build.log'; exit 1; \
+	  }; \
+	  echo "✓ web 빌드 성공"; \
+	else \
+	  echo "→ dev/local web (hot-reload) — 빌드 생략"; \
+	fi
+	@$(MAKE) -s host-restart
+	@echo ""
+	@echo "✓ deploy 완료 — worker/web PM2 재시작됨 (코드 + env 반영)"
+	@echo "  상태: make status / 로그: make logs"
+
+redeploy: deploy ## (별칭) deploy
 
 # =============================================================================
 # 호스트 직접 실행 (foreground, PM2 미사용)

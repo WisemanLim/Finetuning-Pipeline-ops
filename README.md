@@ -23,7 +23,7 @@ worker/web 은 호스트에서 PM2 로 직접 실행해 호스트 GPU/MPS 를 �
 11. [트러블슈팅](#11-트러블슈팅)
 12. [업그레이드 / 코드 반영](#12-업그레이드--코드-반영)
 13. [백업 / 복구](#13-백업--복구)
-14. [Worktro Finetuning Pipeline → WFP 변경 요약](#14-worktro-finetuning-pipeline--eden-fp-변경-요약)
+14. [Worktro Finetuning Pipeline → WFP 변경 요약](#14-worktro-finetuning-pipeline--wfp-변경-요약)
 
 ---
 
@@ -177,6 +177,8 @@ source ~/.bashrc
 | `GOOGLE_/GITHUB_/KAKAO_CLIENT_*` | OAuth 공급자 |
 | `WFP_RULES_PATH`         | `rules/hw_to_plan.yaml` override |
 | `WFP_TORCH_INDEX`        | PyTorch wheel index override |
+| `WFP_LLAMA_CPP_DIR`      | GGUF 변환용 llama.cpp 위치 (`make install-convert-tools` 클론 경로). 미지정 시 PATH 탐색 |
+| `WFP_CONVERT_TIMEOUT`    | 모델 변환 서브프로세스 타임아웃(초). 기본 1800 |
 | `GRADIO_BASE_URL`        | Stage 9 추론 시연 |
 
 `make dev` 는 `dev-env-check` 가 `SUPERVISOR_*` 만 검증, `make prod` 는 `env-check` 가 모든 운영 비밀 검증.
@@ -206,9 +208,15 @@ source ~/.bashrc
 | `make env-status`       | OS/GPU 진단 + 누락 패키지 표시 |
 | `make env-status-json`  | 진단 JSON (CI 용) |
 | `make install-deps`     | 학습 패키지(torch/transformers/…) 환경별 자동 설치 |
+| `make install-convert-tools` | 모델 변환 도구(mlx-lm/onnx/optimum + llama.cpp) 설치 — bootstrap 포함 |
 | `make reinstall-worker` | `git pull` 후 worker uninstall + reinstall + PM2 재시작 |
 | `make sync`             | `reinstall-worker` 별칭 |
 | `make worker-editable`  | editable install 보장 (idempotent) |
+| `make pull`             | worker + web 각각 `git pull --ff-only` (로컬 변경 있으면 건너뜀) |
+| `make deploy`           | **두 레포 동시 배포** — `pull` → worker 재설치 → web `pnpm install`(+prod면 `build`) → PM2 재시작. `GIT_PULL=0` 로 pull 생략 |
+| `make redeploy`         | `deploy` 별칭 |
+
+> **worker·web 동시 변경 시** `make deploy` 한 명령으로 반영. 실행 중인 모드(prod/dev/local)를 자동 감지해 prod web 이면 `pnpm build` 까지 수행한다. 커밋 전 로컬 편집만 반영하려면 `make deploy GIT_PULL=0`.
 
 ### 7.3 호스트 직접 실행 (foreground, PM2 없이)
 
